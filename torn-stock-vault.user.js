@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.1.1
+// @version      0.1.2
 // @homepageURL  https://github.com/sLurpiixD/torn-stock-vault-releases
 // @updateURL    https://raw.githubusercontent.com/sLurpiixD/torn-stock-vault-releases/main/torn-stock-vault.user.js
 // @downloadURL  https://raw.githubusercontent.com/sLurpiixD/torn-stock-vault-releases/main/torn-stock-vault.user.js
@@ -178,10 +178,26 @@
     return;
   }
   if (new URLSearchParams(location.search).get('sid') !== 'stocks' || document.getElementById('slurp-stock-vault')) return;
+  // Keep the widget outside Torn's sidebar/content layout and isolate its controls.
+  const host = document.createElement('div');
+  host.id = 'slurp-stock-vault';
+  host.style.cssText = 'all:initial;position:fixed;right:12px;bottom:12px;z-index:1000;display:block;width:max-content;max-width:calc(100vw - 24px);';
+  const root = host.attachShadow({mode:'open'});
+  const style = document.createElement('style');
+  style.textContent = `
+    details { box-sizing:border-box; color-scheme:dark; background:#202529; color:#f4f5f5;
+      border:1px solid #697378; border-radius:8px; font:14px/1.5 system-ui,sans-serif; }
+    details[open] { width:min(360px,calc(100vw - 24px)); max-height:70vh; overflow:auto; padding:0 12px 12px; }
+    summary { cursor:pointer; padding:7px 12px; }
+    label { display:block; margin:5px 0; }
+    input, select, button { font:inherit; color:#fff; background:#30383e; border:1px solid #85929b;
+      border-radius:4px; padding:3px 6px; max-width:100%; box-sizing:border-box; }
+    button { cursor:pointer; margin:3px 4px 3px 0; }
+    br, pre:empty { display:none; }
+    pre { overflow-wrap:anywhere; }
+  `;
   const panel = document.createElement('details');
-  panel.id = 'slurp-stock-vault';
-  panel.open = true;
-  panel.style.cssText = 'margin:10px;padding:12px;background:#202529;color:#eee;border:1px solid #697378;border-radius:6px;line-height:1.6';
+  root.append(style,panel);
   panel.innerHTML = `<summary><strong>Stock Vault</strong></summary>
     <label>Vault tickers <input data-id="stocks" placeholder="SYM, TCT"></label>
     <label>Locked tickers <input data-id="locks" placeholder="Optional"></label><br>
@@ -198,8 +214,7 @@
   const field = name => panel.querySelector('[data-id="' + name + '"]');
   const out = panel.querySelector('pre');
   for (const sym of symbols.sort()) field('goal').add(new Option(sym,sym));
-  const host = document.querySelector('#mainContainer, main, #content') || document.body;
-  host.prepend(panel);
+  document.body.append(host);
   try {
     const cfg = loadSettings();
     for (const k of ['stocks','locks']) field(k).value = cfg[k].join(', ');
