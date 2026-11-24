@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.2.0
+// @version      0.2.1
 // @description  Stock vault for Torn — spread, rebalance, withdraw, P&L, blocks, swing trading. Smart series UI.
 // @author       Noobler
 // @homepageURL  https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -2642,7 +2642,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                 <input type="text" id="pos-buy-amount" class="alfa-input" value="" placeholder="e.g. 100k, 1m">
                 <span class="form-hint" id="pos-cash-hint">Cash: -- \u2248 0 shares</span>
             </div>
-            <div id="pos-trade-status" class="gamble-status" style="margin-top:6px;"></div>
+            <div id="pos-trade-status" class="swing-trade-status" style="margin-top:6px;"></div>
         </div>
         
         <div class="form-row">
@@ -3112,7 +3112,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
             <div class="quick-trade-hint" id="close-pos-sell-hint">${maxOwnedSellable > 0 ? "Sells the full close amount at market, then closes tracking." : "No owned shares to sell. Uncheck sell to close tracking only."}</div>
         </div>
 
-        <div id="close-pos-status" class="gamble-status" style="margin-top:8px;"></div>
+        <div id="close-pos-status" class="swing-trade-status" style="margin-top:8px;"></div>
 
         <div class="quick-trade-actions">
             <button id="close-pos-confirm" class="alfa-main-btn qb-btn-sell">Close & Sell</button>
@@ -3925,7 +3925,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       // Smart spread: skip stocks with SELL/TAKE PROFIT signals
       minimalMode: false,
       // Show only Vault Spread, Rebalance, Withdraw + Lock Blocks/Smart Mode
-      modules: { portfolio: true, gamble: true, swing: true, stocks: true },
+      modules: { portfolio: true, swing: true, stocks: true },
       // Visibility: Settings → Modules
       excludeLockedBlocksFromValue: false
       // When true, Total Vault Value = loose + swing only (excludes locked blocks)
@@ -3940,45 +3940,6 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       vaultConfig = { ...DEFAULT_VAULT_CONFIG };
     }
     let vaultAnalysisCache = {};
-    const DEFAULT_GAMBLE_CONFIG = {
-      targetStock: "",
-      depositPresets: [
-        { label: "50k", amount: 5e4 },
-        { label: "100k", amount: 1e5 },
-        { label: "500k", amount: 5e5 },
-        { label: "1m", amount: 1e6 },
-        { label: "All", amount: -1 }
-      ],
-      withdrawPresets: [
-        { label: "50k", amount: 5e4 },
-        { label: "100k", amount: 1e5 },
-        { label: "500k", amount: 5e5 },
-        { label: "1m", amount: 1e6 },
-        { label: "All", amount: -1 }
-      ],
-      requireConfirmation: false
-    };
-    let gambleConfig = {};
-    try {
-      let saved = JSON.parse(localStorage.getItem("alfa_gamble_config"));
-      if (saved) gambleConfig = { ...DEFAULT_GAMBLE_CONFIG, ...saved };
-      else gambleConfig = { ...DEFAULT_GAMBLE_CONFIG };
-    } catch (e) {
-      gambleConfig = { ...DEFAULT_GAMBLE_CONFIG };
-    }
-    function saveGambleConfig() {
-      try {
-        localStorage.setItem("alfa_gamble_config", JSON.stringify(gambleConfig));
-      } catch (e) {
-        console.error("Failed to save gamble config:", e);
-      }
-    }
-    function getGambleTargetStock() {
-      if (gambleConfig.targetStock && vaultConfig.stocks.includes(gambleConfig.targetStock)) {
-        return gambleConfig.targetStock;
-      }
-      return vaultConfig.stocks[0] || "";
-    }
     let vaultCacheMem = null;
     let vaultCacheFlushTimer = null;
     function loadVaultCacheMem() {
@@ -4590,7 +4551,6 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                 <div class="settings-section-title">Visible modules</div>
                 <div class="settings-note">Uncheck to hide sections on the main screen. Hidden modules are not loaded until shown (saves work on load).</div>
                 <label class="settings-checkbox-label"><input type="checkbox" id="settings-mod-portfolio" ${mod.portfolio ? "checked" : ""}> <span>Portfolio P&L</span></label>
-                <label class="settings-checkbox-label"><input type="checkbox" id="settings-mod-gamble" ${mod.gamble ? "checked" : ""}> <span>Gamble Module</span></label>
                 <label class="settings-checkbox-label"><input type="checkbox" id="settings-mod-swing" ${mod.swing ? "checked" : ""}> <span>Swing Trading</span></label>
                 <label class="settings-checkbox-label"><input type="checkbox" id="settings-mod-stocks" ${mod.stocks ? "checked" : ""}> <span>Vault Stocks (vault breakdown)</span></label>
             </div>
@@ -4750,7 +4710,6 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         if ($("#settings-mod-portfolio").length) {
           vaultConfig.modules = {
             portfolio: $("#settings-mod-portfolio").is(":checked"),
-            gamble: $("#settings-mod-gamble").is(":checked"),
             swing: $("#settings-mod-swing").is(":checked"),
             stocks: $("#settings-mod-stocks").is(":checked")
           };
@@ -5149,7 +5108,6 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         return;
       }
       if ($("#vault-pl-content").length) localStorage.setItem("alfa_pl_expanded", $("#vault-pl-content").is(":visible") ? "true" : "false");
-      if ($("#gamble-content").length) localStorage.setItem("alfa_gamble_expanded", $("#gamble-content").is(":visible") ? "true" : "false");
       if ($("#swing-content").length) localStorage.setItem("alfa_swing_expanded", $("#swing-content").is(":visible") ? "true" : "false");
       if ($("#stocks-content").length) localStorage.setItem("alfa_stocks_expanded", $("#stocks-content").is(":visible") ? "true" : "false");
     }
@@ -5384,53 +5342,6 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         </div>
         ` : ""}
         
-        ${!minimalMode && mod.gamble ? `
-        <div class="alfa-gamble-section" id="gamble-section">
-            <div class="gamble-header" id="gamble-toggle">
-                <span class="gamble-title">\u{1F3B0} Gamble Module</span>
-                <span class="alfa-caret ${localStorage.getItem("alfa_gamble_expanded") !== "false" ? "rotated" : ""}">\u25BC</span>
-            </div>
-            <div class="gamble-content" id="gamble-content" style="display:${localStorage.getItem("alfa_gamble_expanded") !== "false" ? "block" : "none"};">
-                <div class="gamble-target-row">
-                    <label class="gamble-target-label">Target Stock</label>
-                    <select id="gamble-target-stock" class="alfa-select gamble-target-select">
-                        ${vaultConfig.stocks.map((s) => `<option value="${s}" ${getGambleTargetStock() === s ? "selected" : ""}>${s}</option>`).join("")}
-                    </select>
-                    <button id="gamble-config-btn" class="alfa-mini-btn" style="border-color:#888; color:#888;" title="Configure preset amounts">Configure</button>
-                </div>
-                <div class="gamble-presets-row">
-                    <div class="gamble-presets-group">
-                        <div class="gamble-cash-row">
-                            <span class="gamble-cash-label">Cash:</span>
-                            <span id="gamble-cash-value" class="gamble-cash-value">--</span>
-                        </div>
-                        <div class="gamble-presets-label">Deposit</div>
-                        <div class="gamble-presets-btns">
-                            ${(gambleConfig.depositPresets || DEFAULT_GAMBLE_CONFIG.depositPresets).map(
-        (p, i) => `<button class="gamble-preset-btn gamble-deposit" data-amount="${p.amount}" data-label="${p.label}">${p.label}</button>`
-      ).join("")}
-                        </div>
-                    </div>
-                    <div class="gamble-presets-group">
-                        <div class="gamble-cash-row">
-                            <span class="gamble-cash-label">Available:</span>
-                            <span id="gamble-available-value" class="gamble-available-value">--</span>
-                        </div>
-                        <div class="gamble-presets-label">Withdraw</div>
-                        <div class="gamble-presets-btns">
-                            ${(gambleConfig.withdrawPresets || DEFAULT_GAMBLE_CONFIG.withdrawPresets).map(
-        (p, i) => `<button class="gamble-preset-btn gamble-withdraw" data-amount="${p.amount}" data-label="${p.label}">${p.label}</button>`
-      ).join("")}
-                        </div>
-                    </div>
-                </div>
-                <div class="gamble-panic-row">
-                    <button id="gamble-panic-btn" class="gamble-panic-btn">\u{1F6A8} Panic: Deposit All</button>
-                </div>
-                <div id="gamble-status" class="gamble-status"></div>
-            </div>
-        </div>
-        ` : ""}
         
         ${!minimalMode && mod.swing ? `
         <div class="alfa-swing-section" id="swing-section">
@@ -5597,36 +5508,6 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         setTimeout(() => statusAfter.html(""), 4e3);
       });
       $("#vault-pl-history").on("click", openTransactionHistoryModal);
-      $("#gamble-toggle").on("click", function() {
-        $("#gamble-content").slideToggle(150, function() {
-          localStorage.setItem("alfa_gamble_expanded", $("#gamble-content").is(":visible") ? "true" : "false");
-          if ($("#gamble-content").is(":visible")) updateGambleCashDisplay();
-        });
-        $(this).find(".alfa-caret").toggleClass("rotated");
-      });
-      $("#gamble-target-stock").on("change", function() {
-        gambleConfig.targetStock = $(this).val();
-        saveGambleConfig();
-        updateGambleCashDisplay();
-      });
-      $("#gamble-config-btn").on("click", openGambleConfigModal);
-      $(document).off("click.gambleDeposit", ".gamble-preset-btn.gamble-deposit").on("click.gambleDeposit", ".gamble-preset-btn.gamble-deposit", async function() {
-        const amount = parseInt($(this).data("amount"), 10);
-        const statusEl = $("#gamble-status");
-        await executeGambleDeposit(amount, $(this), statusEl);
-      });
-      $(document).off("click.gambleWithdraw", ".gamble-preset-btn.gamble-withdraw").on("click.gambleWithdraw", ".gamble-preset-btn.gamble-withdraw", async function() {
-        const amount = parseInt($(this).data("amount"), 10);
-        const statusEl = $("#gamble-status");
-        await executeGambleWithdraw(amount, $(this), statusEl);
-      });
-      $("#gamble-panic-btn").on("click", async function() {
-        const statusEl = $("#gamble-status");
-        await executeGamblePanic($(this), statusEl);
-      });
-      if (localStorage.getItem("alfa_gamble_expanded") !== "false") {
-        updateGambleCashDisplay();
-      }
       $("#swing-toggle").on("click", function() {
         $("#swing-content").slideToggle(150, function() {
           localStorage.setItem("alfa_swing_expanded", $("#swing-content").is(":visible") ? "true" : "false");
@@ -8679,7 +8560,6 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           updateLocalCache(symbol, n);
           updateVaultDisplay(true);
           try {
-            if ($("#gamble-content").is(":visible")) updateGambleCashDisplay();
           } catch (e) {
           }
         };
@@ -8917,246 +8797,6 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       await postTradeRequest(symb, amt, step);
       updateLocalCache(symb, step === "buyShares" ? amt : -amt);
       return { success: true, symbol: symb, amount: amt, step };
-    }
-    async function executeGambleDeposit(amount, $btn, statusEl) {
-      const sym = getGambleTargetStock();
-      if (!sym || !vaultConfig.stocks.includes(sym)) {
-        if (statusEl) statusEl.html('<span style="color:#ef5350;">No target stock configured. Add vault stocks in Settings.</span>');
-        return;
-      }
-      if (vaultConfig.lockedStocks && vaultConfig.lockedStocks.includes(sym)) {
-        if (statusEl) statusEl.html('<span style="color:#ef5350;">Target stock is locked.</span>');
-        return;
-      }
-      if (!vaultAnalysisCache[sym]) await analyzeStockForVault(sym);
-      const price = getPriceForTrade(sym);
-      if (price <= 0) {
-        if (statusEl) statusEl.html('<span style="color:#ef5350;">Price unavailable.</span>');
-        return;
-      }
-      let cash = 0;
-      const domCash = getMoneyFast();
-      if (domCash !== void 0 && domCash !== null && !isNaN(domCash) && $("#user-money").length > 0) {
-        cash = domCash;
-      } else {
-        const nw = await getLiquidNetworth(true) || await getLiquidNetworth(false);
-        cash = (nw.wallet !== void 0 ? nw.wallet : nw.pureCash) || 0;
-      }
-      let sharesToBuy = 0;
-      if (amount < 0) {
-        sharesToBuy = Math.floor(cash / price);
-      } else {
-        const cost = amount;
-        sharesToBuy = Math.floor(cost / price);
-        if (sharesToBuy * price > cash) {
-          if (statusEl) statusEl.html(`<span style="color:#ef5350;">Cannot deposit ${formatMoneyWhole(amount)}: only ${formatMoneyWhole(cash)} available. All or nothing.</span>`);
-          setTimeout(() => {
-            if (statusEl) statusEl.html("");
-          }, 5e3);
-          return;
-        }
-      }
-      if (sharesToBuy <= 0) {
-        if (statusEl) statusEl.html('<span style="color:#ef5350;">No cash to deposit.</span>');
-        return;
-      }
-      if ($btn) $btn.prop("disabled", true).data("orig-text", $btn.text()).text("...");
-      try {
-        await postTradeAsync(sym, sharesToBuy, "buyShares");
-        if (statusEl) statusEl.html(`<span style="color:#8bc34a;">Deposited ${sharesToBuy.toLocaleString()} shares (${formatMoneyWhole(sharesToBuy * price)})</span>`);
-        updateVaultDisplay();
-      } catch (e) {
-        if (statusEl) statusEl.html(`<span style="color:#ef5350;">${e.message || "Failed"}</span>`);
-        console.error("Gamble deposit error:", e);
-      }
-      if ($btn) {
-        $btn.prop("disabled", false).text($btn.data("orig-text") || "Deposit");
-        setTimeout(() => {
-          if (statusEl) statusEl.html("");
-        }, 3e3);
-      }
-    }
-    async function executeGambleWithdraw(amount, $btn, statusEl) {
-      const sym = getGambleTargetStock();
-      if (!sym || !vaultConfig.stocks.includes(sym)) {
-        if (statusEl) statusEl.html('<span style="color:#ef5350;">No target stock configured.</span>');
-        return;
-      }
-      if (vaultConfig.lockedStocks && vaultConfig.lockedStocks.includes(sym)) {
-        if (statusEl) statusEl.html('<span style="color:#ef5350;">Target stock is locked. Unlock in vault to withdraw.</span>');
-        return;
-      }
-      const breakdown = calculateVaultBreakdown();
-      const stock = breakdown.find((s) => s.symbol === sym);
-      if (!stock || stock.looseShares <= 0) {
-        if (statusEl) {
-          if (stock && stock.hasSwingTrade && stock.swingProtectedShares >= stock.owned) {
-            statusEl.html('<span style="color:#ef5350;">All shares protected by swing trade!</span>');
-          } else if (stock && stock.benefitLockedShares >= stock.owned) {
-            statusEl.html('<span style="color:#ef5350;">All shares locked in benefit tier!</span>');
-          } else {
-            statusEl.html('<span style="color:#ef5350;">No loose shares to withdraw.</span>');
-          }
-        }
-        return;
-      }
-      if (!vaultAnalysisCache[sym]) await analyzeStockForVault(sym);
-      const price = getPriceForTrade(sym);
-      if (price <= 0) {
-        if (statusEl) statusEl.html('<span style="color:#ef5350;">Price unavailable.</span>');
-        return;
-      }
-      const maxSellable = Math.max(0, stock.owned - stock.swingProtectedShares - stock.benefitLockedShares);
-      let maxByValue = maxSellable;
-      if (stock.looseValue > 0 && price > 0) {
-        maxByValue = Math.min(maxSellable, Math.floor(stock.looseValue / price));
-      }
-      const maxSellableShares = Math.min(stock.looseShares, maxByValue);
-      let sharesToSell = 0;
-      if (amount < 0) {
-        sharesToSell = maxSellableShares;
-      } else {
-        const sharesRequested = Math.ceil(stockGrossFromNet(amount) / price);
-        const netAvailable = stockNetFromGross(maxSellableShares * price);
-        if (sharesRequested > maxSellableShares) {
-          if (statusEl) statusEl.html(`<span style="color:#ef5350;">Cannot withdraw ${formatMoneyWhole(amount)}: only ${formatMoneyWhole(netAvailable)} net available (${maxSellableShares.toLocaleString()} shares). All or nothing.</span>`);
-          setTimeout(() => {
-            if (statusEl) statusEl.html("");
-          }, 5e3);
-          return;
-        }
-        sharesToSell = sharesRequested;
-      }
-      if (sharesToSell <= 0) {
-        if (statusEl) statusEl.html('<span style="color:#ef5350;">No shares to sell.</span>');
-        return;
-      }
-      if ($btn) $btn.prop("disabled", true).data("orig-text", $btn.text()).text("...");
-      try {
-        await postTradeAsync(sym, sharesToSell, "sellShares");
-        if (statusEl) statusEl.html(`<span style="color:#8bc34a;">Withdrew ${sharesToSell.toLocaleString()} shares (${formatMoneyWhole(sharesToSell * price * 0.999)})</span>`);
-        updateVaultDisplay();
-      } catch (e) {
-        if (statusEl) statusEl.html(`<span style="color:#ef5350;">${e.message || "Failed"}</span>`);
-        console.error("Gamble withdraw error:", e);
-      }
-      if ($btn) {
-        $btn.prop("disabled", false).text($btn.data("orig-text") || "Withdraw");
-        setTimeout(() => {
-          if (statusEl) statusEl.html("");
-        }, 3e3);
-      }
-    }
-    async function executeGamblePanic($btn, statusEl) {
-      await executeGambleDeposit(-1, $btn, statusEl);
-    }
-    async function updateGambleCashDisplay() {
-      const el = $("#gamble-cash-value");
-      const availEl = $("#gamble-available-value");
-      if (!el.length) return;
-      try {
-        const domCash = getMoneyFast();
-        if (domCash !== void 0 && domCash !== null && !isNaN(domCash) && $("#user-money").length > 0) {
-          if (lastNwCache) {
-            lastNwCache.wallet = domCash;
-            lastNwCache.pureCash = domCash;
-          }
-          el.text(formatMoneyWhole(domCash));
-        } else {
-          const nw = await getLiquidNetworth(true) || await getLiquidNetworth(false);
-          el.text(formatMoneyWhole((nw.wallet !== void 0 ? nw.wallet : nw.pureCash) || 0));
-        }
-      } catch (e) {
-        el.text("--");
-      }
-      try {
-        if (!availEl.length) return;
-        const sym = getGambleTargetStock();
-        if (!sym || !vaultConfig.stocks.includes(sym)) {
-          availEl.text("--");
-          return;
-        }
-        if (vaultConfig.lockedStocks && vaultConfig.lockedStocks.includes(sym)) {
-          availEl.text("$0");
-          return;
-        }
-        const breakdown = calculateVaultBreakdown();
-        const stock = breakdown.find((s) => s.symbol === sym);
-        if (!stock || stock.looseShares <= 0) {
-          availEl.text("$0");
-          return;
-        }
-        availEl.text(formatMoneyWhole(stockNetFromGross(stock.looseValue)));
-      } catch (e) {
-        if (availEl.length) availEl.text("--");
-      }
-    }
-    function openGambleConfigModal() {
-      const presets = gambleConfig.depositPresets || DEFAULT_GAMBLE_CONFIG.depositPresets;
-      const wPresets = gambleConfig.withdrawPresets || DEFAULT_GAMBLE_CONFIG.withdrawPresets;
-      const depositRows = presets.map((p, i) => `
-        <div class="gamble-config-row">
-            <input type="text" class="gamble-config-label alfa-input" data-type="deposit" data-i="${i}" value="${p.label}" placeholder="Label" style="width:60px;">
-            <input type="text" class="gamble-config-amount alfa-input" data-type="deposit" data-i="${i}" value="${p.amount < 0 ? "all" : p.amount.toLocaleString()}" placeholder="Amount or 'all'" style="width:100px;">
-        </div>
-    `).join("");
-      const withdrawRows = wPresets.map((p, i) => `
-        <div class="gamble-config-row">
-            <input type="text" class="gamble-config-label alfa-input" data-type="withdraw" data-i="${i}" value="${p.label}" placeholder="Label" style="width:60px;">
-            <input type="text" class="gamble-config-amount alfa-input" data-type="withdraw" data-i="${i}" value="${p.amount < 0 ? "all" : p.amount.toLocaleString()}" placeholder="Amount or 'all'" style="width:100px;">
-        </div>
-    `).join("");
-      const html = `
-    <div class="gamble-config-modal">
-        <div class="gamble-config-section">
-            <div class="gamble-config-title">Deposit Presets</div>
-            ${depositRows}
-        </div>
-        <div class="gamble-config-section">
-            <div class="gamble-config-title">Withdraw Presets</div>
-            ${withdrawRows}
-        </div>
-        <div class="gamble-config-hint">Use "all" for full amount. Amounts support k, m (e.g. 50k, 1m).</div>
-        <div class="gamble-config-actions">
-            <button id="gamble-config-save" class="alfa-main-btn" style="border-color:#66bb6a; color:#66bb6a;">Save</button>
-            <button id="gamble-config-cancel" class="alfa-main-btn" style="border-color:#888; color:#888;">Cancel</button>
-        </div>
-    </div>`;
-      createModal("Gamble Presets", html);
-      $("#gamble-config-save").on("click", function() {
-        const dep = gambleConfig.depositPresets || [...DEFAULT_GAMBLE_CONFIG.depositPresets];
-        const wit = gambleConfig.withdrawPresets || [...DEFAULT_GAMBLE_CONFIG.withdrawPresets];
-        $(".gamble-config-label[data-type=deposit]").each(function() {
-          const i = parseInt($(this).data("i"), 10);
-          dep[i] = dep[i] || {};
-          dep[i].label = $(this).val().trim() || "Preset";
-        });
-        $(".gamble-config-amount[data-type=deposit]").each(function() {
-          const i = parseInt($(this).data("i"), 10);
-          const val = $(this).val().trim().toLowerCase();
-          dep[i] = dep[i] || {};
-          dep[i].amount = val === "all" ? -1 : parseTornNumber($(this).val()) || 0;
-        });
-        $(".gamble-config-label[data-type=withdraw]").each(function() {
-          const i = parseInt($(this).data("i"), 10);
-          wit[i] = wit[i] || {};
-          wit[i].label = $(this).val().trim() || "Preset";
-        });
-        $(".gamble-config-amount[data-type=withdraw]").each(function() {
-          const i = parseInt($(this).data("i"), 10);
-          const val = $(this).val().trim().toLowerCase();
-          wit[i] = wit[i] || {};
-          wit[i].amount = val === "all" ? -1 : parseTornNumber($(this).val()) || 0;
-        });
-        gambleConfig.depositPresets = dep;
-        gambleConfig.withdrawPresets = wit;
-        saveGambleConfig();
-        $("#alfa-modal-overlay").remove();
-        updateVaultDisplay();
-      });
-      $("#gamble-config-cancel").on("click", function() {
-        $("#alfa-modal-overlay").remove();
-      });
     }
     async function fetchBankRates() {
       let key = localStorage.getItem("alfa_vault_apikey");
@@ -9537,36 +9177,7 @@ textarea.alfa-input { height: auto; min-height: 60px; }
 .vault-pl-divider { border-top: 1px solid #333; margin: 12px 0; }
 .vault-pl-section-title { font-size: 11px; color: #888; text-transform: uppercase; margin-bottom: 8px; font-weight: bold; }
 
-/* --- GAMBLE MODULE CSS --- */
-.alfa-gamble-section { background: #151515; border: 1px solid #333; border-radius: 6px; margin: 12px 0; }
-.gamble-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; cursor: pointer; transition: background 0.2s; gap: 10px; }
-.gamble-header:hover { background: #1a1a1a; }
-.gamble-title { font-weight: bold; color: var(--hf-accent, #caa14a); font-size: 12px; }
-.gamble-content { padding: 0 12px 12px; }
-.gamble-target-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-.gamble-target-label { font-size: 11px; color: #888; }
-.gamble-target-select { flex: 1; min-width: 80px; max-width: 120px; }
-.gamble-cash-row { font-size: 12px; color: #aaa; margin-bottom: 10px; }
-.gamble-cash-label { margin-right: 6px; }
-.gamble-cash-value { font-weight: bold; color: #8bc34a; }
-.gamble-presets-row { display: flex; gap: 20px; margin-bottom: 12px; flex-wrap: wrap; }
-.gamble-presets-group { flex: 1; min-width: 180px; }
-.gamble-presets-label { font-size: 10px; color: #888; text-transform: uppercase; margin-bottom: 6px; }
-.gamble-presets-btns { display: flex; flex-wrap: wrap; gap: 6px; }
-.gamble-preset-btn { background: transparent; border: 1px solid #555; color: #888; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; transition: all 0.2s; }
-.gamble-preset-btn:hover { border-color: var(--hf-accent, #caa14a); color: #fff; }
-.gamble-preset-btn.gamble-deposit:hover { border-color: #66bb6a; color: #66bb6a; }
-.gamble-preset-btn.gamble-withdraw:hover { border-color: #ef5350; color: #ef5350; }
-.gamble-panic-row { margin-top: 10px; padding-top: 10px; border-top: 1px solid #333; }
-.gamble-panic-btn { width: 100%; background: #ef535022; border: 1px solid #ef5350; color: #ef5350; padding: 10px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: bold; transition: all 0.2s; }
-.gamble-panic-btn:hover { background: #ef5350; color: #fff; }
-.gamble-status { font-size: 11px; margin-top: 8px; min-height: 20px; }
-.gamble-config-modal { display: flex; flex-direction: column; gap: 15px; }
-.gamble-config-section { display: flex; flex-direction: column; gap: 8px; }
-.gamble-config-title { font-size: 12px; font-weight: bold; color: var(--hf-accent, #caa14a); }
-.gamble-config-row { display: flex; gap: 10px; align-items: center; }
-.gamble-config-hint { font-size: 10px; color: #666; }
-.gamble-config-actions { display: flex; gap: 10px; }
+.swing-trade-status { font-size: 11px; margin-top: 8px; min-height: 20px; }
 
 /* --- SWING TRADING CSS --- */
 .alfa-swing-section { background: #151515; border: 1px solid #333; border-radius: 6px; margin: 12px 0; }
@@ -9836,7 +9447,6 @@ textarea.alfa-input { height: auto; min-height: 60px; }
 
     /* Space content away from collapsible module header border */
     .hf-stocks-root .vault-pl-content,
-    .hf-stocks-root .gamble-content,
     .hf-stocks-root .swing-content,
     .hf-stocks-root .stocks-content {
       padding-top: 12px;
@@ -9846,7 +9456,6 @@ textarea.alfa-input { height: auto; min-height: 60px; }
     .hf-stocks-root .alfa-vault-summary,
     .hf-stocks-root .alfa-vault-income-row,
     .hf-stocks-root .alfa-vault-pl-section,
-    .hf-stocks-root .alfa-gamble-section,
     .hf-stocks-root .alfa-swing-section,
     .hf-stocks-root .alfa-stocks-section,
     .hf-stocks-root .vault-stock-row,
@@ -9877,20 +9486,11 @@ textarea.alfa-input { height: auto; min-height: 60px; }
     .hf-stocks-root .alfa-vault-total-value,
     .hf-stocks-root .vault-stock-value,
     .hf-stocks-root .vault-income-value,
-    .hf-stocks-root .gamble-cash-value,
     .hf-stocks-root .quick-trade-price,
     .hf-stocks-root .vault-trade-price {
       color: var(--hf-success);
     }
 
-    .hf-stocks-root .gamble-presets-group .gamble-cash-row {
-      margin-bottom: 6px;
-    }
-
-    .hf-stocks-root .gamble-available-value {
-      font-weight: 700;
-      color: var(--hf-accent-text);
-    }
 
     .hf-stocks-root .alfa-vault-total-label,
     .hf-stocks-root .vault-pl-label,
@@ -9912,19 +9512,16 @@ textarea.alfa-input { height: auto; min-height: 60px; }
     }
 
     .hf-stocks-root .vault-pl-title,
-    .hf-stocks-root .gamble-title,
     .hf-stocks-root .swing-title,
     .hf-stocks-root .stocks-title,
     .hf-stocks-root .pl-period-title,
     .hf-stocks-root .swing-signal-group-title,
     .alfa-modal-overlay.hf-torn .settings-section-title,
-    .alfa-modal-overlay.hf-torn .gamble-config-title,
     .alfa-modal-overlay.hf-torn .vault-config-title {
       color: var(--hf-accent-text);
     }
 
     .hf-stocks-root .vault-pl-header,
-    .hf-stocks-root .gamble-header,
     .hf-stocks-root .swing-header,
     .hf-stocks-root .stocks-header {
       background: var(--hf-panel-header-bg);
@@ -9932,14 +9529,12 @@ textarea.alfa-input { height: auto; min-height: 60px; }
     }
 
     .hf-stocks-root .alfa-vault-pl-section,
-    .hf-stocks-root .alfa-gamble-section,
     .hf-stocks-root .alfa-swing-section,
     .hf-stocks-root .alfa-stocks-section {
       overflow: hidden;
     }
 
     .hf-stocks-root .vault-pl-header:hover,
-    .hf-stocks-root .gamble-header:hover,
     .hf-stocks-root .swing-header:hover,
     .hf-stocks-root .stocks-header:hover,
     .hf-stocks-root .vault-stock-row:hover,
@@ -9962,44 +9557,10 @@ textarea.alfa-input { height: auto; min-height: 60px; }
     .hf-stocks-root .quick-trade-actions,
     .alfa-modal-overlay.hf-torn .form-actions,
     .alfa-modal-overlay.hf-torn .settings-actions,
-    .alfa-modal-overlay.hf-torn .vault-config-actions,
-    .alfa-modal-overlay.hf-torn .gamble-config-actions {
+    .alfa-modal-overlay.hf-torn .vault-config-actions {
       gap: 8px;
     }
 
-    /* Gamble Presets: Deposit | Withdraw side by side */
-    .alfa-modal-overlay.hf-torn .gamble-config-modal {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px 20px;
-      align-items: start;
-    }
-
-    .alfa-modal-overlay.hf-torn .gamble-config-hint,
-    .alfa-modal-overlay.hf-torn .gamble-config-actions {
-      grid-column: 1 / -1;
-    }
-
-    .alfa-modal-overlay.hf-torn .gamble-config-row {
-      width: 100%;
-    }
-
-    .alfa-modal-overlay.hf-torn .gamble-config-label {
-      width: 64px !important;
-      flex-shrink: 0;
-    }
-
-    .alfa-modal-overlay.hf-torn .gamble-config-amount {
-      flex: 1 1 auto !important;
-      width: auto !important;
-      min-width: 0;
-    }
-
-    @media (max-width: 560px) {
-      .alfa-modal-overlay.hf-torn .gamble-config-modal {
-        grid-template-columns: 1fr;
-      }
-    }
 
     .hf-stocks-root .alfa-main-btn,
     .hf-stocks-root .alfa-mini-btn,
@@ -10008,7 +9569,6 @@ textarea.alfa-input { height: auto; min-height: 60px; }
     .hf-stocks-root .swing-tab,
     .hf-stocks-root .tx-tab,
     .hf-stocks-root .tx-period-btn,
-    .hf-stocks-root .gamble-preset-btn,
     .hf-stocks-root .vault-action-btn,
     .hf-stocks-root .rebal-action-btn,
     .hf-stocks-root .swing-close-btn,
@@ -10021,8 +9581,7 @@ textarea.alfa-input { height: auto; min-height: 60px; }
     .alfa-modal-overlay.hf-torn .alfa-main-btn,
     .alfa-modal-overlay.hf-torn .alfa-mini-btn,
     .alfa-modal-overlay.hf-torn .settings-tab,
-    .alfa-modal-overlay.hf-torn .vault-action-btn,
-    .alfa-modal-overlay.hf-torn .gamble-preset-btn {
+    .alfa-modal-overlay.hf-torn .vault-action-btn {
       appearance: none;
       border: 1px solid var(--hf-panel-border);
       border-radius: 5px;
@@ -10054,7 +9613,6 @@ textarea.alfa-input { height: auto; min-height: 60px; }
     .hf-stocks-root .swing-tab:hover,
     .hf-stocks-root .tx-tab:hover,
     .hf-stocks-root .tx-period-btn:hover,
-    .hf-stocks-root .gamble-preset-btn:hover,
     .hf-stocks-root .vault-action-btn:hover:not(:disabled),
     .hf-stocks-root .rebal-action-btn:hover:not(:disabled),
     .hf-stocks-root .swing-merge-btn:hover,
@@ -10062,8 +9620,7 @@ textarea.alfa-input { height: auto; min-height: 60px; }
     .alfa-modal-overlay.hf-torn .alfa-main-btn:hover,
     .alfa-modal-overlay.hf-torn .alfa-mini-btn:hover,
     .alfa-modal-overlay.hf-torn .settings-tab:hover,
-    .alfa-modal-overlay.hf-torn .vault-action-btn:hover:not(:disabled),
-    .alfa-modal-overlay.hf-torn .gamble-preset-btn:hover {
+    .alfa-modal-overlay.hf-torn .vault-action-btn:hover:not(:disabled) {
       background: var(--hf-accent-subtle);
       border-color: var(--hf-hover);
       color: var(--hf-hover);
