@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.2.2
+// @version      0.2.3
 // @description  Stock vault for Torn — spread, rebalance, withdraw, P&L, blocks, swing trading. Smart series UI.
 // @author       Noobler
 // @homepageURL  https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -4553,6 +4553,9 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                     ${allStocks.map(sym => `<option value="${sym}" ${vaultConfig.blockGoal?.symbol === sym ? "selected" : ""}>${sym}</option>`).join("")}
                 </select></label>
                 <label>Target tier <input id="vault-goal-tier" class="alfa-input" type="number" min="1" step="1" style="width:65px" value="${Number(vaultConfig.blockGoal?.tier) || 1}"></label>
+                <label for="vault-goal-share">Deposit toward goal <output id="vault-goal-percent"></output></label>
+                <input type="range" id="vault-goal-share" min="0" max="100" step="1" value="${goalPercent(vaultConfig.blockGoal)}" style="width:100%">
+                <div id="vault-goal-help"></div>
                 <div>With Lock Blocks on, reserve shares toward this tier. Shares above the protected amount remain available.</div>
                 <label class="settings-checkbox-label">
                     <input type="checkbox" id="settings-skip-overvalued" ${vaultConfig.skipOvervalued ? "checked" : ""}>
@@ -4725,9 +4728,24 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           setTimeout(() => $(this).text("Clear Analysis Cache").css("color", "#ef5350"), 1500);
         }
       });
+      function updateGoalControls() {
+        const symbol = $("#vault-block-goal").val();
+        const passive = STOCK_DATA[symbol]?.type === "P";
+        const tier = $("#vault-goal-tier");
+        tier.prop("disabled", !symbol || passive);
+        if (passive) tier.val(1);
+        const slider = $("#vault-goal-share").prop("disabled", !symbol);
+        $("#vault-goal-percent").text(slider.val() + "%");
+        $("#vault-goal-help").text(!symbol ? "Select a block to allocate deposits." :
+          (passive ? symbol + " has one benefit tier. " : "") +
+          "Vault Spread splits cash after your keep amount. Unused goal cash goes to other eligible stocks.");
+      }
+      $("#vault-block-goal").on("change", updateGoalControls);
+      $("#vault-goal-share").on("input change", updateGoalControls);
+      updateGoalControls();
       $("#settings-save").on("click", function() {
         const goalSymbol = $("#vault-block-goal").val();
-        const goal = goalSymbol ? {symbol: goalSymbol, tier: Number($("#vault-goal-tier").val())} : null;
+        const goal = goalSymbol ? {symbol: goalSymbol, tier: Number($("#vault-goal-tier").val()), percent: Number($("#vault-goal-share").val())} : null;
         if (goal && !goalThreshold(goalSymbol, goal)) {
           alert("Enter a valid target tier. Passive stocks support tier 1 only.");
           return;
@@ -6051,7 +6069,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     }
     async function vaultSpread() {
       const status = $("#vault-status");
-      if (vaultConfig.stocks.length === 0) {
+      if (vaultConfig.stocks.length === 0 && !goalPercent(vaultConfig.blockGoal)) {
         status.html('<span style="color:#ef5350;">No vault stocks configured! Click Settings to set up your vault.</span>');
         setTimeout(() => status.html(""), 3e3);
         return;
@@ -6063,7 +6081,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         setTimeout(() => status.html(""), 3e3);
         return;
       }
-      let keepAmount = parseTornNumber($("#vault-spread-keep").val()) || vaultConfig.keepAmount || 0;
+      const keepText = String($("#vault-spread-keep").val() ?? "").trim();
+      const keepAmount = Math.max(0, keepText ? parseTornNumber(keepText) || 0 : vaultConfig.keepAmount || 0);
       let availableCash = money - keepAmount;
       if (availableCash <= 0) {
         status.html('<span style="color:#ef5350;">Not enough cash after keeping amount!</span>');
@@ -6083,9 +6102,24 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       status.html("");
       showSpreadModal(allocations, availableCash, keepAmount);
     }
+    function goalPercent(goal) {
+      return Number.isInteger(goal?.percent) && goal.percent >= 0 && goal.percent <= 100 ? goal.percent : 0;
+    }
+    function spreadGoalOrder(goal, totalCash) {
+      const symbol = goal.symbol;
+      const target = goalThreshold(symbol, goal);
+      const price = getPrice(symbol);
+      const unitCents = Math.round(price * 100);
+      if (!(target > 0 && unitCents > 0)) return null;
+      const owned = Math.max(getOwnedShares(symbol), getOwnedSharesFromDom(symbol));
+      const goalCents = Math.floor(Math.round(totalCash * 100) * goalPercent(goal) / 100);
+      const shares = Math.min(target - owned, Math.floor(goalCents / unitCents));
+      return shares > 0 ? {symbol, shares, price, cost: shares * unitCents / 100, goalTarget: target} : null;
+    }
     async function calculateSpreadAllocations(totalCash, strategy) {
-      let stocks2 = vaultConfig.stocks;
-      if (stocks2.length === 0) return [];
+      const goal = vaultConfig.blockGoal;
+      const percent = goalPercent(goal);
+      let stocks2 = percent ? [...new Set([...vaultConfig.stocks, goal.symbol])] : vaultConfig.stocks;
       if (vaultConfig.lockedStocks && vaultConfig.lockedStocks.length > 0) {
         stocks2 = stocks2.filter((sym) => !vaultConfig.lockedStocks.includes(sym));
       }
@@ -6105,6 +6139,13 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         $("#vault-status").html('<span style="color:#ffb74d;">No eligible stocks! Check locks or run analysis.</span>');
         return [];
       }
+      let goalOrder = null;
+      if (percent > 0 && stocks2.includes(goal.symbol)) {
+        goalOrder = spreadGoalOrder(goal, totalCash);
+        stocks2 = stocks2.filter(symbol => symbol !== goal.symbol);
+        if (goalOrder) totalCash = (Math.round(totalCash * 100) - Math.round(goalOrder.cost * 100)) / 100;
+      }
+      if (!stocks2.length || totalCash <= 0) return goalOrder ? [goalOrder] : [];
       let allocations = [];
       switch (strategy) {
         case "swing_strategy":
@@ -6124,7 +6165,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           allocations = await equalSplitAllocation(totalCash, stocks2);
           break;
       }
-      allocations = adjustForBenefitTiers(allocations);
+      allocations = adjustForBenefitTiers(allocations, totalCash);
+      if (goalOrder) allocations.unshift(goalOrder);
       return allocations.filter((a) => a.shares > 0);
     }
     async function swingStrategyAllocation(totalCash, stocks2) {
@@ -6365,7 +6407,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       }
       return redistributeRemainder(allocations, totalCash, weights, totalWeight);
     }
-    function adjustForBenefitTiers(allocations) {
+    function adjustForBenefitTiers(allocations, budget) {
+      let spareCents = Math.round(budget * 100) - allocations.reduce((sum, order) => sum + Math.round(order.cost * 100), 0);
       return allocations.map((alloc) => {
         const stockData = STOCK_DATA[alloc.symbol];
         if (!stockData) return alloc;
@@ -6376,7 +6419,9 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           if (currentOwned < tierTarget && totalAfter >= tierTarget * 0.9 && totalAfter < tierTarget) {
             const sharesToTier = tierTarget - currentOwned;
             const costToTier = sharesToTier * alloc.price;
-            if (costToTier <= alloc.cost * 1.2) {
+            const extraCents = Math.round(costToTier * 100) - Math.round(alloc.cost * 100);
+            if (costToTier <= alloc.cost * 1.2 && extraCents <= spareCents) {
+              spareCents -= extraCents;
               alloc.shares = sharesToTier;
               alloc.cost = costToTier;
             }
@@ -6388,7 +6433,9 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           if (totalAfter >= nextTierShares * 0.9 && totalAfter < nextTierShares) {
             const sharesToTier = nextTierShares - currentOwned;
             const costToTier = sharesToTier * alloc.price;
-            if (costToTier <= alloc.cost * 1.2) {
+            const extraCents = Math.round(costToTier * 100) - Math.round(alloc.cost * 100);
+            if (costToTier <= alloc.cost * 1.2 && extraCents <= spareCents) {
+              spareCents -= extraCents;
               alloc.shares = sharesToTier;
               alloc.cost = costToTier;
             }
@@ -6406,6 +6453,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         type: "buy",
         symbol: alloc.symbol,
         shares: alloc.shares,
+        goalTarget: alloc.goalTarget,
         index: idx
       }));
       let currentTradeIndex = 0;
@@ -6436,7 +6484,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         return `<div class="rebal-row" data-spread-index="${idx}">
                         <span class="rebal-sym">${alloc.symbol}</span>
                         <span class="rebal-signal" style="color:#66bb6a;">BUY</span>
-                        <span class="rebal-reason"></span>
+                        <span class="rebal-reason">${alloc.goalTarget ? "Block goal" : ""}</span>
                         <span class="rebal-shares">+${alloc.shares.toLocaleString()}</span>
                         <span class="rebal-value" style="color:#66bb6a;">$${formatCompactNumber(alloc.cost)}</span>
                     </div>`;
@@ -6481,6 +6529,10 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         $btn.prop("disabled", true).text("Executing...");
         updateRowState(trade.index, "executing");
         try {
+          if (trade.goalTarget) {
+            const owned = Math.max(getOwnedShares(trade.symbol), getOwnedSharesFromDom(trade.symbol));
+            if (owned + trade.shares > trade.goalTarget) throw new Error("Holdings changed. Close and recalculate Vault Spread.");
+          }
           await postTradeAsync(trade.symbol, trade.shares, "buyShares");
           updateRowState(trade.index, "completed");
           updateVaultDisplay();
@@ -6494,6 +6546,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         } catch (e) {
           console.error(`Buy failed for ${trade.symbol}:`, e);
           updateRowState(trade.index, "failed");
+          $("#spread-progress").text(e.message || "Buy failed.");
           $btn.prop("disabled", false).text(`Buying ${trade.symbol} (${currentTradeIndex + 1}/${tradeQueue.length}) - Retry`);
         }
       });
