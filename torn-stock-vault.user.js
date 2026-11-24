@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.2.5
+// @version      0.2.6
 // @description  Stock vault for Torn — spread, rebalance, withdraw, P&L, blocks, swing trading. Smart series UI.
 // @author       Noobler
 // @homepageURL  https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -4444,6 +4444,107 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         console.error("Failed to save vault config:", e);
       }
     }
+    const withdrawalRiskCache = new Map();
+    function sevenDayRisk(rows, endDay) {
+      const closes = new Map();
+      for (const row of rows) {
+        if (!Array.isArray(row)) continue;
+        const day = Math.floor(Number(row[0]) / 86400);
+        const price = Number(row[4]);
+        if (Number.isInteger(day) && day >= endDay - 90 && day < endDay && Number.isFinite(price) && price > 0) closes.set(day, price);
+      }
+      const losses = [];
+      let count = 0;
+      for (const [day, entry] of closes) {
+        const exit = closes.get(day + 7);
+        if (exit === undefined) continue;
+        count++;
+        const loss = 1 - stockNetFromGross(exit) / entry;
+        if (loss > 1e-12) losses.push(loss * 1000000);
+      }
+      losses.sort((a, b) => a - b);
+      const mid = Math.floor(losses.length / 2);
+      const median = losses.length ? (losses[mid] + losses[Math.floor((losses.length - 1) / 2)]) / 2 : null;
+      return {count, frequency: count ? losses.length / count : null, median};
+    }
+    const withdrawalRiskPanel = `
+      <details class="vault-risk-panel" style="margin:8px 0">
+        <summary style="cursor:pointer">Compare 7-day withdrawal risk</summary>
+        <p class="settings-note">Historical 7-day holds using daily closing prices and the sale fee. Typical loss is the median per $1M among losing holds. At least 20 overlapping holds are required.</p>
+        <button type="button" class="alfa-mini-btn vault-risk-load">Load comparison</button>
+        <label>Sort by <select class="alfa-select vault-risk-sort">
+          <option value="frequency">Lowest loss frequency</option><option value="median">Smallest typical loss</option><option value="ticker">Ticker</option>
+        </select></label>
+        <p class="vault-risk-status" aria-live="polite"></p>
+        <div style="max-height:230px;overflow:auto"><table style="width:100%;text-align:left">
+          <thead><tr><th>Ticker</th><th>Loss frequency</th><th>Typical loss / $1M</th><th>7-day holds</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </details>`;
+    function bindWithdrawalRisk(symbols) {
+      const panel = document.querySelector("#alfa-modal-overlay .vault-risk-panel");
+      if (!panel) return;
+      const sort = panel.querySelector("select");
+      const load = panel.querySelector("button");
+      const body = panel.querySelector("tbody");
+      const status = panel.querySelector(".vault-risk-status");
+      const results = new Map();
+      function render() {
+        const ranked = [...results.keys()].sort((a, b) => {
+          if (sort.value === "ticker") return a.localeCompare(b);
+          const score = sym => {
+            const row = results.get(sym);
+            return row?.count >= 20 ? row[sort.value] ?? Infinity : Infinity;
+          };
+          return score(a) - score(b) || a.localeCompare(b);
+        });
+        body.replaceChildren();
+        for (const sym of ranked) {
+          const row = results.get(sym);
+          const tr = body.insertRow();
+          const enough = row?.count >= 20;
+          const frequency = enough ? (row.frequency * 100).toFixed(1) + "%" : row ? "Limited history" : "Unavailable";
+          const median = enough && row.median !== null ? "$" + Math.round(row.median).toLocaleString("en-US") : "—";
+          for (const value of [sym, frequency, median, row?.count ?? "—"]) tr.insertCell().textContent = value;
+        }
+      }
+      sort.addEventListener("change", render);
+      load.addEventListener("click", async () => {
+        if (load.disabled) return;
+        const day = Math.floor(Date.now() / 86400000);
+        const date = d => new Date(d * 86400000).toISOString().slice(0, 10);
+        const period = date(day - 90) + " to " + date(day - 1) + " UTC";
+        load.disabled = true;
+        status.textContent = "Loading " + period + "…";
+        results.clear();
+        render();
+        const pending = symbols.slice();
+        async function next() {
+          while (panel.isConnected && pending.length) {
+            const sym = pending.shift();
+            const cached = withdrawalRiskCache.get(sym);
+            let row = cached?.day === day ? cached.row : null;
+            if (!row) {
+              const url = TORNSY_API + "/" + sym.toLowerCase() + "?interval=d1&from=" + (day - 90) * 86400 + "&to=" + day * 86400 + "&limit=90";
+              const history = await gmFetch(url);
+              if (Array.isArray(history?.data)) {
+                row = sevenDayRisk(history.data, day);
+                withdrawalRiskCache.set(sym, {day, row});
+              }
+            }
+            results.set(sym, row);
+            if (panel.isConnected) render();
+          }
+        }
+        try {
+          await Promise.all([next(), next(), next()]);
+          status.textContent = period + " · " + results.size + " tickers checked";
+        } finally {
+          load.disabled = false;
+          load.textContent = "Reload comparison";
+        }
+      });
+    }
     function openSettingsModal() {
       const savedKey = localStorage.getItem("alfa_vault_apikey") || "";
       const lockBlocksChecked = localStorage.getItem("alfa_vault_lock") === "true";
@@ -4500,6 +4601,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                 <div class="vault-stock-grid" id="vault-stock-grid">
                     ${stockCheckboxes}
                 </div>
+                ${withdrawalRiskPanel}
                 <div class="vault-quick-actions" style="margin-top:10px;">
                     <button id="vault-select-none" class="alfa-mini-btn" style="border-color:#888; color:#888;">Clear All</button>
                     <button id="vault-select-active" class="alfa-mini-btn" style="border-color:#caa14a; color:#caa14a;">Select Active (A)</button>
@@ -4611,6 +4713,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         <button id="settings-save" class="alfa-main-btn" style="flex:1; border-color:#8bc34a; color:#8bc34a;">Save & Close</button>
     </div>`;
       createModal("Settings", html);
+      bindWithdrawalRisk(allStocks);
       $(".settings-tab").on("click", function() {
         const tab = $(this).data("tab");
         $(".settings-tab").removeClass("active");
@@ -4795,6 +4898,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
             <div class="vault-stock-grid" id="vault-stock-grid">
                 ${stockCheckboxes}
             </div>
+                ${withdrawalRiskPanel}
             <div class="vault-quick-actions">
                 <button id="vault-select-none" class="alfa-mini-btn" style="border-color:#888; color:#888;">Clear All</button>
                 <button id="vault-select-active" class="alfa-mini-btn" style="border-color:#caa14a; color:#caa14a;">Select Active (A)</button>
@@ -4854,6 +4958,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         </div>
     </div>`;
       createModal("Vault Configuration", html);
+      bindWithdrawalRisk(allStocks);
       const depositDescs = {
           cash_flow: "Use deposits to equalize the value of loose holdings, starting with the smallest.",
         "swing_strategy": "Same multi-indicator logic as swing scan (RSI, Bollinger, S/R, ADX, volume)",
