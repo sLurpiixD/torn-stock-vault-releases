@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.2.1
+// @version      0.2.2
 // @description  Stock vault for Torn — spread, rebalance, withdraw, P&L, blocks, swing trading. Smart series UI.
 // @author       Noobler
 // @homepageURL  https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -1664,7 +1664,7 @@
       return "$" + Math.round(n).toLocaleString("en-US");
     }
     function fillWithdrawToGross(plan, stockInfo, targetGross) {
-      const lockBlocks = $("#alfa-lock-toggle").is(":checked");
+      const lockBlocks = blocksEnabled();
       let remaining = targetGross - plan.reduce((sum, p) => sum + p.value, 0);
       if (remaining <= 0) return plan;
       const roomFor = (stock) => {
@@ -3029,20 +3029,32 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       $("#pos-cancel").on("click", closeModal);
     }
     function getSwingBenefitLockedShares(sym, owned) {
-      const checkbox = $("#alfa-lock-toggle");
-      const lockBlocks = checkbox.length > 0 ? checkbox.is(":checked") : localStorage.getItem("alfa_vault_lock") === "true";
-      if (!lockBlocks) return 0;
-      const stockData = STOCK_DATA[sym];
-      if (!stockData || !owned) return 0;
-      const tierInfo = getBenefitTier(sym, owned);
-      if (stockData.type === "P") {
-        return owned >= stockData.base ? stockData.base : 0;
+      return blockReserve(sym, owned, blocksEnabled());
+    }
+    function blocksEnabled() {
+      const toggle = $("#alfa-lock-toggle");
+      return toggle.length ? toggle.is(":checked") : localStorage.getItem("alfa_vault_lock") === "true";
+    }
+    function goalThreshold(sym, goal) {
+      if (!goal || goal.symbol !== sym) return 0;
+      const stock = STOCK_DATA[sym];
+      if (!stock || !Number.isSafeInteger(goal.tier) || goal.tier < 1 || (stock.type === "P" && goal.tier !== 1)) return 0;
+      const required = stock.base * (2 ** goal.tier - 1);
+      return Number.isSafeInteger(required) ? required : 0;
+    }
+    function blockReserve(sym, owned, enabled) {
+      if (!enabled || !STOCK_DATA[sym]) return 0;
+      const tier = getBenefitTier(sym, owned).tier;
+      const earned = STOCK_DATA[sym].base * (2 ** tier - 1);
+      return Math.min(owned, Math.max(earned, goalThreshold(sym, vaultConfig.blockGoal)));
+    }
+    function checkGoalSale(sym, shares) {
+      const target = goalThreshold(sym, vaultConfig.blockGoal);
+      if (!target || !blocksEnabled()) return;
+      const owned = Math.min(getOwnedShares(sym), getOwnedSharesFromDom(sym));
+      if (shares > owned - blockReserve(sym, owned, true)) {
+        throw new Error("Sale would use shares protected for " + sym + ". Refresh the plan or change the goal in Protection settings.");
       }
-      if (tierInfo.tier > 0) {
-        const minSharesForCurrentTier = stockData.base * (Math.pow(2, tierInfo.tier) - 1);
-        return Math.min(minSharesForCurrentTier, owned);
-      }
-      return 0;
     }
     function openClosePositionModal(pos) {
       if (!pos) return;
@@ -3050,7 +3062,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       const totalShares = pos.shares;
       const owned = getOwnedShares(pos.symbol);
       const benefitLocked = getSwingBenefitLockedShares(pos.symbol, owned);
-      const maxOwnedSellable = Math.max(0, owned);
+      const goalActive = blocksEnabled() && goalThreshold(pos.symbol, vaultConfig.blockGoal) > 0;
+      const maxOwnedSellable = Math.max(0, owned - (goalActive ? benefitLocked : 0));
       const exitReasonOptions = [
         { v: "manual_close", l: "\u270B Manual" },
         { v: "target_hit", l: "\u{1F3AF} Target" },
@@ -3914,6 +3927,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     };
     const DEFAULT_VAULT_CONFIG = {
       stocks: [],
+      blockGoal: null,
       lockedStocks: [],
       // Stocks protected from vault spread/withdraw
       depositStrategy: "swing_strategy",
@@ -4534,6 +4548,12 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                     <input type="checkbox" id="settings-lock-blocks" ${lockBlocksChecked ? "checked" : ""}>
                     <span><strong>Lock Blocks</strong> - Protect benefit tier shares from being sold during withdrawals and rebalancing</span>
                 </label>
+                <label>Partial block goal <select id="vault-block-goal" class="alfa-select">
+                    <option value="">None</option>
+                    ${allStocks.map(sym => `<option value="${sym}" ${vaultConfig.blockGoal?.symbol === sym ? "selected" : ""}>${sym}</option>`).join("")}
+                </select></label>
+                <label>Target tier <input id="vault-goal-tier" class="alfa-input" type="number" min="1" step="1" style="width:65px" value="${Number(vaultConfig.blockGoal?.tier) || 1}"></label>
+                <div>With Lock Blocks on, reserve shares toward this tier. Shares above the protected amount remain available.</div>
                 <label class="settings-checkbox-label">
                     <input type="checkbox" id="settings-skip-overvalued" ${vaultConfig.skipOvervalued ? "checked" : ""}>
                     <span><strong>Smart Mode</strong> - Skip stocks with SELL or TAKE PROFIT signals when spreading/rebalancing</span>
@@ -4706,6 +4726,13 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         }
       });
       $("#settings-save").on("click", function() {
+        const goalSymbol = $("#vault-block-goal").val();
+        const goal = goalSymbol ? {symbol: goalSymbol, tier: Number($("#vault-goal-tier").val())} : null;
+        if (goal && !goalThreshold(goalSymbol, goal)) {
+          alert("Enter a valid target tier. Passive stocks support tier 1 only.");
+          return;
+        }
+        vaultConfig.blockGoal = goal;
         if ($("#settings-exclude-locked-from-value").length) vaultConfig.excludeLockedBlocksFromValue = $("#settings-exclude-locked-from-value").is(":checked");
         if ($("#settings-mod-portfolio").length) {
           vaultConfig.modules = {
@@ -5012,20 +5039,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           total += owned * price;
           continue;
         }
-        const stockData = STOCK_DATA[sym];
-        let benefitLockedShares = 0;
-        if (stockData) {
-          const tierInfo = getBenefitTier(sym, owned);
-          if (stockData.type === "P") {
-            benefitLockedShares = owned >= stockData.base ? stockData.base : 0;
-          } else {
-            const currentTier = tierInfo.tier;
-            if (currentTier > 0) {
-              const minSharesForCurrentTier = stockData.base * (Math.pow(2, currentTier) - 1);
-              benefitLockedShares = Math.min(minSharesForCurrentTier, owned);
-            }
-          }
-        }
+        const benefitLockedShares = blockReserve(sym, owned, lockBlocks);
         total += Math.max(0, owned - benefitLockedShares) * price;
       }
       return total;
@@ -5042,18 +5056,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         const tierInfo = getBenefitTier(sym, owned);
         const stockData = STOCK_DATA[sym];
         const swingProtectedShares = swingTradeData.activePositions.filter((p) => (p.symbol || "").toUpperCase() === (sym || "").toUpperCase()).reduce((sum, p) => sum + (p.shares || 0), 0);
-        let benefitLockedShares = 0;
-        if (lockBlocks && stockData) {
-          if (stockData.type === "P") {
-            benefitLockedShares = owned >= stockData.base ? stockData.base : 0;
-          } else {
-            const currentTier = tierInfo.tier;
-            if (currentTier > 0) {
-              const minSharesForCurrentTier = stockData.base * (Math.pow(2, currentTier) - 1);
-              benefitLockedShares = Math.min(minSharesForCurrentTier, owned);
-            }
-          }
-        }
+        const benefitLockedShares = blockReserve(sym, owned, lockBlocks);
         const totalProtected = benefitLockedShares + swingProtectedShares;
         const looseShares = Math.max(0, owned - totalProtected);
         const looseValue = looseShares * price;
@@ -6596,7 +6599,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     async function calculateSmartRebalancePlan(currentBreakdown, eligibleStocks, totalVaultValue) {
       const sells = [];
       const buys = [];
-      const lockBlocks = $("#alfa-lock-toggle").is(":checked");
+      const lockBlocks = blocksEnabled();
       const smartMode = vaultConfig.skipOvervalued || $("#vault-skip-overvalued").is(":checked");
       const overvaluedSignals = ["sell", "take_profit"];
       const buySignals = ["buy", "good", "hold"];
@@ -7023,6 +7026,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         const sell = plan.sells[i];
         status.html(`<span style="color:#ffd54f;">Selling ${sell.symbol}... (${i + 1}/${plan.sells.length})</span>`);
         try {
+          checkGoalSale(sell.symbol, sell.shares);
           await new Promise((resolve) => {
             $.post(
               `https://www.torn.com/page.php?sid=StockMarket&step=sellShares&rfcv=${getRFC()}`,
@@ -7142,18 +7146,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         const swingProtectedShares = swingTradeData.activePositions.filter((p) => (p.symbol || "").toUpperCase() === (sym || "").toUpperCase()).reduce((sum, p) => sum + (p.shares || 0), 0);
         const checkbox = $("#alfa-lock-toggle");
         const lockBlocks = checkbox.length > 0 ? checkbox.is(":checked") : localStorage.getItem("alfa_vault_lock") === "true";
-        let lockedShares = 0;
-        if (lockBlocks && stockData) {
-          if (stockData.type === "P") {
-            lockedShares = owned >= stockData.base ? stockData.base : 0;
-          } else {
-            const currentTier = tierInfo.tier;
-            if (currentTier > 0) {
-              const minSharesForCurrentTier = stockData.base * (Math.pow(2, currentTier) - 1);
-              lockedShares = Math.min(minSharesForCurrentTier, owned);
-            }
-          }
-        }
+        const lockedShares = blockReserve(sym, owned, lockBlocks);
         const totalProtected = lockedShares + swingProtectedShares;
         const looseShares = Math.max(0, owned - totalProtected);
         const value = owned * price;
@@ -7205,7 +7198,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     function looseSharesFirstPlan(targetAmount, stockInfo) {
       const plan = [];
       let remaining = targetAmount;
-      const lockBlocks = $("#alfa-lock-toggle").is(":checked");
+      const lockBlocks = blocksEnabled();
       for (const stock of stockInfo) {
         if (remaining <= 0) break;
         if (stock.looseShares <= 0) continue;
@@ -7258,7 +7251,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       return plan;
     }
     function swingStrategyWithdrawPlan(targetAmount, stockInfo) {
-      const lockBlocks = $("#alfa-lock-toggle").is(":checked");
+      const lockBlocks = blocksEnabled();
       const maxFractionPerStock = 0.5;
       const withScore = stockInfo.filter((s) => s.looseShares > 0).map((s) => {
         const opp = s.analysis ? analyzeSwingOpportunity(s.analysis) : null;
@@ -7407,7 +7400,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     }
     function proportionalPlan(targetAmount, stockInfo) {
       const plan = [];
-      const lockBlocks = $("#alfa-lock-toggle").is(":checked");
+      const lockBlocks = blocksEnabled();
       let totalSellable = 0;
       for (const stock of stockInfo) {
         if (lockBlocks) {
@@ -7444,7 +7437,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     function worstRoiFirstPlan(targetAmount, stockInfo) {
       const plan = [];
       let remaining = targetAmount;
-      const lockBlocks = $("#alfa-lock-toggle").is(":checked");
+      const lockBlocks = blocksEnabled();
       const sortedStocks = [...stockInfo].sort((a, b) => a.roi - b.roi);
       for (const stock of sortedStocks) {
         if (remaining <= 0) break;
@@ -7475,7 +7468,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     function bestPerformersPlan(targetAmount, stockInfo) {
       const plan = [];
       let remaining = targetAmount;
-      const lockBlocks = $("#alfa-lock-toggle").is(":checked");
+      const lockBlocks = blocksEnabled();
       const sortedStocks = [...stockInfo].sort((a, b) => b.dipFrom7d - a.dipFrom7d);
       for (const stock of sortedStocks) {
         if (remaining <= 0) break;
@@ -7649,6 +7642,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         const item = plan[i];
         status.html(`<span style="color:#ffd54f;">Selling ${item.symbol}... (${i + 1}/${plan.length})</span>`);
         try {
+          checkGoalSale(item.symbol, item.shares);
           await new Promise((resolve, reject) => {
             $.post(
               `https://www.torn.com/page.php?sid=StockMarket&step=sellShares&rfcv=${getRFC()}`,
@@ -7828,7 +7822,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         if (stock && stock.hasSwingTrade && stock.swingProtectedShares >= stock.owned) {
           status.html('<span style="color:#ef5350;">All shares protected by swing trade!</span>');
         } else if (stock && stock.benefitLockedShares >= stock.owned) {
-          status.html('<span style="color:#ef5350;">All shares locked in benefit tier!</span>');
+          status.html('<span style="color:#ef5350;">All shares reserved for a block!</span>');
         } else {
           status.html('<span style="color:#ef5350;">No loose shares to sell!</span>');
         }
@@ -7843,7 +7837,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           protectionInfo += `<div class="quick-trade-protection-item">\u{1F6E1}\uFE0F Swing trade protected: ${stock.swingProtectedShares.toLocaleString()} shares</div>`;
         }
         if (stock.benefitLockedShares > 0) {
-          protectionInfo += `<div class="quick-trade-protection-item">\u{1F512} Benefit tier locked: ${stock.benefitLockedShares.toLocaleString()} shares</div>`;
+          protectionInfo += `<div class="quick-trade-protection-item">\u{1F512} Block reserve: ${stock.benefitLockedShares.toLocaleString()} shares</div>`;
         }
         protectionInfo += "</div>";
       }
@@ -8104,7 +8098,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       const breakdown = calculateVaultBreakdown();
       const stock = breakdown.find((s) => s.symbol === sym);
       if (!stock || stock.looseShares <= 0) {
-        $("#vault-status").html(stock && stock.hasSwingTrade && stock.swingProtectedShares >= stock.owned ? '<span style="color:#ef5350;">All shares protected by swing trade!</span>' : stock && stock.benefitLockedShares >= stock.owned ? '<span style="color:#ef5350;">All shares locked in benefit tier!</span>' : '<span style="color:#ef5350;">No loose shares to sell!</span>');
+        $("#vault-status").html(stock && stock.hasSwingTrade && stock.swingProtectedShares >= stock.owned ? '<span style="color:#ef5350;">All shares protected by swing trade!</span>' : stock && stock.benefitLockedShares >= stock.owned ? '<span style="color:#ef5350;">All shares reserved for a block!</span>' : '<span style="color:#ef5350;">No loose shares to sell!</span>');
         return;
       }
       const price = getPriceForTrade(sym);
@@ -8113,7 +8107,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       if (stock.hasSwingTrade || stock.benefitLockedShares > 0) {
         protectionInfo = '<div class="quick-trade-protection">';
         if (stock.hasSwingTrade) protectionInfo += `<div class="quick-trade-protection-item">\u{1F6E1}\uFE0F Swing trade protected: ${stock.swingProtectedShares.toLocaleString()} shares</div>`;
-        if (stock.benefitLockedShares > 0) protectionInfo += `<div class="quick-trade-protection-item">\u{1F512} Benefit tier locked: ${stock.benefitLockedShares.toLocaleString()} shares</div>`;
+        if (stock.benefitLockedShares > 0) protectionInfo += `<div class="quick-trade-protection-item">\u{1F512} Block reserve: ${stock.benefitLockedShares.toLocaleString()} shares</div>`;
         protectionInfo += "</div>";
       }
       const html = `
@@ -8644,6 +8638,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       return 0;
     }
     async function postTradeRequest(symb, amt, step) {
+      if (step === "sellShares") checkGoalSale(symb, amt);
       const tradeId = resolveTradeStockId(symb);
       if (!tradeId) throw new Error("Stock not found on page");
       const rfc = getRFC();
