@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.2.6
+// @version      0.2.7
 // @description  Stock vault for Torn — spread, rebalance, withdraw, P&L, blocks, swing trading. Smart series UI.
 // @author       Noobler
 // @homepageURL  https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -4476,7 +4476,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           <option value="frequency">Lowest loss frequency</option><option value="median">Smallest typical loss</option><option value="ticker">Ticker</option>
         </select></label>
         <p class="vault-risk-status" aria-live="polite"></p>
-        <div style="max-height:230px;overflow:auto"><table style="width:100%;text-align:left">
+        <div style="max-height:230px;overflow:auto"><table class="alfa-table" style="width:100%;text-align:left">
           <thead><tr><th>Ticker</th><th>Loss frequency</th><th>Typical loss / $1M</th><th>7-day holds</th></tr></thead>
           <tbody></tbody>
         </table></div>
@@ -4490,7 +4490,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       const status = panel.querySelector(".vault-risk-status");
       const results = new Map();
       function render() {
-        const ranked = [...results.keys()].sort((a, b) => {
+        const ranked = symbols.slice().sort((a, b) => {
           if (sort.value === "ticker") return a.localeCompare(b);
           const score = sym => {
             const row = results.get(sym);
@@ -4503,7 +4503,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           const row = results.get(sym);
           const tr = body.insertRow();
           const enough = row?.count >= 20;
-          const frequency = enough ? (row.frequency * 100).toFixed(1) + "%" : row ? "Limited history" : "Unavailable";
+          const frequency = enough ? (row.frequency * 100).toFixed(1) + "%" : row ? "Limited history" : results.has(sym) ? "Unavailable" : "Loading…";
           const median = enough && row.median !== null ? "$" + Math.round(row.median).toLocaleString("en-US") : "—";
           for (const value of [sym, frequency, median, row?.count ?? "—"]) tr.insertCell().textContent = value;
         }
@@ -4533,7 +4533,10 @@ P&L: ${formatMoney(trade.pnl)}`)) {
               }
             }
             results.set(sym, row);
-            if (panel.isConnected) render();
+            if (panel.isConnected) {
+              status.textContent = period + " · " + results.size + " of " + symbols.length + " tickers checked";
+              render();
+            }
           }
         }
         try {
@@ -10073,6 +10076,27 @@ textarea.alfa-input { height: auto; min-height: 60px; }
     .alfa-modal-overlay.hf-torn .quick-trade-symbol {
       color: var(--hf-accent-text);
     }
+
+    #alfa-modal-overlay .vault-risk-panel {
+      color-scheme: dark;
+      background: #202126;
+      color: #f0f1f3;
+      padding: 8px;
+    }
+    #alfa-modal-overlay .vault-risk-panel :is(summary, label, p, th, td, button, select, option) {
+      color: #f0f1f3 !important;
+      text-shadow: none;
+    }
+    #alfa-modal-overlay .vault-risk-panel :is(button, select, option, th) {
+      background: #34363d !important;
+    }
+    #alfa-modal-overlay .vault-risk-panel td {
+      background: #202126 !important;
+    }
+    #alfa-modal-overlay .vault-risk-panel tr:nth-child(even) td {
+      background: #292b31 !important;
+    }
+    #alfa-modal-overlay .vault-risk-panel button:disabled { opacity: 1; }
 
     .hf-stocks-root .alfa-table th,
     .hf-stocks-root .tx-table th,
