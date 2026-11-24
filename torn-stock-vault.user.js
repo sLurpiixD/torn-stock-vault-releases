@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.2.3
+// @version      0.2.4
 // @description  Stock vault for Torn — spread, rebalance, withdraw, P&L, blocks, swing trading. Smart series UI.
 // @author       Noobler
 // @homepageURL  https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -4514,6 +4514,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                     <select id="vault-deposit-strategy" class="alfa-select" style="width:100%;">
                         <option value="swing_strategy" ${vaultConfig.depositStrategy === "swing_strategy" ? "selected" : ""}>Swing Strategy</option>
                         <option value="rsi_weighted" ${vaultConfig.depositStrategy === "rsi_weighted" ? "selected" : ""}>Weighted by RSI</option>
+                        <option value="cash_flow" ${vaultConfig.depositStrategy === "cash_flow" ? "selected" : ""}>Cash-flow rebalancing (buy underweight)</option>
                         <option value="equal" ${vaultConfig.depositStrategy === "equal" ? "selected" : ""}>Equal Split</option>
                         <option value="dip_weighted" ${vaultConfig.depositStrategy === "dip_weighted" ? "selected" : ""}>Weighted by Dip</option>
                         <option value="roi_priority" ${vaultConfig.depositStrategy === "roi_priority" ? "selected" : ""}>ROI Priority</option>
@@ -4807,6 +4808,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                 <select id="vault-deposit-strategy" class="alfa-select" style="width:100%;">
                     <option value="swing_strategy" ${vaultConfig.depositStrategy === "swing_strategy" ? "selected" : ""}>Swing Strategy (matches swing scan)</option>
                     <option value="rsi_weighted" ${vaultConfig.depositStrategy === "rsi_weighted" ? "selected" : ""}>Weighted by RSI (oversold priority)</option>
+                    <option value="cash_flow" ${vaultConfig.depositStrategy === "cash_flow" ? "selected" : ""}>Cash-flow rebalancing (buy underweight)</option>
                     <option value="equal" ${vaultConfig.depositStrategy === "equal" ? "selected" : ""}>Equal Split</option>
                     <option value="dip_weighted" ${vaultConfig.depositStrategy === "dip_weighted" ? "selected" : ""}>Weighted by Dip (% below avg)</option>
                     <option value="roi_priority" ${vaultConfig.depositStrategy === "roi_priority" ? "selected" : ""}>ROI Priority (benefit earners)</option>
@@ -4848,6 +4850,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     </div>`;
       createModal("Vault Configuration", html);
       const depositDescs = {
+          cash_flow: "Use deposits to equalize the value of loose holdings, starting with the smallest.",
         "swing_strategy": "Same multi-indicator logic as swing scan (RSI, Bollinger, S/R, ADX, volume)",
         "equal": "Distribute cash evenly across all vault stocks",
         "dip_weighted": "Put more cash into stocks trading below their 7-day average",
@@ -6146,6 +6149,10 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         if (goalOrder) totalCash = (Math.round(totalCash * 100) - Math.round(goalOrder.cost * 100)) / 100;
       }
       if (!stocks2.length || totalCash <= 0) return goalOrder ? [goalOrder] : [];
+      if (strategy === "cash_flow") {
+        const buys = cashFlowAllocation(totalCash, stocks2);
+        return goalOrder ? [goalOrder, ...buys] : buys;
+      }
       let allocations = [];
       switch (strategy) {
         case "swing_strategy":
@@ -6168,6 +6175,52 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       allocations = adjustForBenefitTiers(allocations, totalCash);
       if (goalOrder) allocations.unshift(goalOrder);
       return allocations.filter((a) => a.shares > 0);
+    }
+    function cashFlowAllocation(totalCash, stocks) {
+      const eligible = new Set(stocks);
+      const rows = calculateVaultBreakdown()
+        .filter(row => eligible.has(row.symbol) && row.price > 0 && Number.isFinite(row.price))
+        .map(row => {
+          const cents = Math.round(row.price * 100);
+          return {symbol: row.symbol, cents, value: row.looseShares * cents, shares: 0};
+        })
+        .filter(row => row.cents > 0)
+        .sort((a, b) => a.value - b.value || a.symbol.localeCompare(b.symbol));
+      if (!rows.length) return [];
+
+      // Raise the lowest holdings together until the next holding joins them.
+      const budget = Math.round(totalCash * 100);
+      let remaining = budget;
+      let level = rows[0].value;
+      for (let i = 1; i < rows.length; i++) {
+        const cost = (rows[i].value - level) * i;
+        if (cost > remaining) {
+          level += remaining / i;
+          remaining = 0;
+          break;
+        }
+        remaining -= cost;
+        level = rows[i].value;
+      }
+      level += remaining / rows.length;
+
+      let change = budget;
+      for (const row of rows) {
+        row.shares = Math.floor(Math.max(0, level - row.value) / row.cents);
+        change -= row.shares * row.cents;
+        row.shortfall = level - row.value - row.shares * row.cents;
+      }
+      // Spend rounding change only if another whole share brings the holding closer.
+      rows.sort((a, b) => b.shortfall - a.shortfall || a.symbol.localeCompare(b.symbol));
+      for (const row of rows) {
+        if (row.cents <= change && row.shortfall > row.cents / 2) {
+          row.shares++;
+          change -= row.cents;
+        }
+      }
+      return rows.filter(row => row.shares > 0).map(row => ({
+        symbol: row.symbol, shares: row.shares, price: row.cents / 100, cost: row.shares * row.cents / 100
+      }));
     }
     async function swingStrategyAllocation(totalCash, stocks2) {
       const allocations = [];
