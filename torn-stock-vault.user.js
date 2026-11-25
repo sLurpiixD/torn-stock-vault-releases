@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.2.8
+// @version      0.2.9
 // @description  Stock vault for Torn — spread, rebalance, withdraw, P&L, blocks, swing trading. Smart series UI.
 // @author       Noobler
 // @homepageURL  https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -6652,7 +6652,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         return `<div class="rebal-row" data-spread-index="${idx}">
                         <span class="rebal-sym">${alloc.symbol}</span>
                         <span class="rebal-signal" style="color:#66bb6a;">BUY</span>
-                        <span class="rebal-reason rebal-block-goal">${alloc.goalTarget ? "Block Goal" : ""}</span>
+                        ${alloc.goalTarget ? '<span class="rebal-block-goal">Block&nbsp;Goal</span>' : ""}
                         <span class="rebal-shares">+${alloc.shares.toLocaleString()}</span>
                         <span class="rebal-value" style="color:#66bb6a;">$${formatCompactNumber(alloc.cost)}</span>
                     </div>`;
@@ -10326,8 +10326,9 @@ textarea.alfa-input { height: auto; min-height: 60px; }
     }
 
     .alfa-modal-overlay.hf-torn .rebal-block-goal {
-      flex: 0 0 auto;
-      width: auto;
+      flex: 0 0 72px;
+      font-size: 12px;
+      color: var(--hf-text-muted);
       min-width: max-content;
       white-space: nowrap;
     }
