@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.3.0
+// @version      0.3.1
 // @description  Stock vault for Torn — spread, rebalance, withdraw, P&L, blocks, swing trading. Smart series UI.
 // @author       Noobler
 // @homepageURL  https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -4445,7 +4445,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       }
     }
     const withdrawalRiskCache = new Map();
-    function sevenDayRisk(rows, endDay) {
+    function holdingRisk(rows, endDay, days) {
       const closes = new Map();
       for (const row of rows) {
         if (!Array.isArray(row)) continue;
@@ -4456,7 +4456,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       const losses = [];
       let count = 0;
       for (const [day, entry] of closes) {
-        const exit = closes.get(day + 7);
+        const exit = closes.get(day + days);
         if (exit === undefined) continue;
         count++;
         const loss = 1 - stockNetFromGross(exit) / entry;
@@ -4469,22 +4469,24 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     }
     const withdrawalRiskPanel = `
       <details class="vault-risk-panel" style="margin:8px 0">
-        <summary style="cursor:pointer">Compare 7-day withdrawal risk</summary>
-        <p class="settings-note">Historical 7-day holds using daily closing prices and the sale fee. Typical loss is the median per $1M among losing holds. At least 20 overlapping holds are required.</p>
+        <summary style="cursor:pointer">Compare withdrawal risk</summary>
+        <p class="settings-note">Historical holds using daily closing prices and the sale fee. Typical loss is the median per $1M among losing holds. At least 20 overlapping holds are required.</p>
         <button type="button" class="alfa-mini-btn vault-risk-load">Load comparison</button>
+        <label>Holding period <select class="alfa-select vault-risk-days"><option value="1">1 day</option><option value="3">3 days</option><option value="7" selected>7 days</option></select></label>
         <label>Sort by <select class="alfa-select vault-risk-sort">
           <option value="frequency">Lowest loss frequency</option><option value="median">Smallest typical loss</option><option value="ticker">Ticker</option>
         </select></label>
         <p class="vault-risk-status" aria-live="polite"></p>
         <div style="max-height:230px;overflow:auto"><table class="alfa-table" style="width:100%;text-align:left">
-          <thead><tr><th>Ticker</th><th>Loss frequency</th><th>Typical loss / $1M</th><th>7-day holds</th></tr></thead>
+          <thead><tr><th>Ticker</th><th>Loss frequency</th><th>Typical loss / $1M</th><th>Holds</th></tr></thead>
           <tbody></tbody>
         </table></div>
       </details>`;
     function bindWithdrawalRisk(symbols) {
       const panel = document.querySelector("#alfa-modal-overlay .vault-risk-panel");
       if (!panel) return;
-      const sort = panel.querySelector("select");
+      const sort = panel.querySelector(".vault-risk-sort");
+      const days = panel.querySelector(".vault-risk-days");
       const load = panel.querySelector("button");
       const body = panel.querySelector("tbody");
       const status = panel.querySelector(".vault-risk-status");
@@ -4493,14 +4495,14 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         const ranked = symbols.slice().sort((a, b) => {
           if (sort.value === "ticker") return a.localeCompare(b);
           const score = sym => {
-            const row = results.get(sym);
+            const row = results.get(sym)?.[days.value];
             return row?.count >= 20 ? row[sort.value] ?? Infinity : Infinity;
           };
           return score(a) - score(b) || a.localeCompare(b);
         });
         body.replaceChildren();
         for (const sym of ranked) {
-          const row = results.get(sym);
+          const row = results.get(sym)?.[days.value];
           const tr = body.insertRow();
           const enough = row?.count >= 20;
           const frequency = enough ? (row.frequency * 100).toFixed(1) + "%" : row ? "Limited history" : results.has(sym) ? "Unavailable" : "Loading…";
@@ -4508,7 +4510,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           for (const value of [sym, frequency, median, row?.count ?? "—"]) tr.insertCell().textContent = value;
         }
       }
-      sort.addEventListener("change", render);
+      sort.addEventListener("change", () => { if (results.size || load.disabled) render(); });
+      days.addEventListener("change", () => { if (results.size || load.disabled) render(); });
       load.addEventListener("click", async () => {
         if (load.disabled) return;
         const day = Math.floor(Date.now() / 86400000);
@@ -4528,7 +4531,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
               const url = TORNSY_API + "/" + sym.toLowerCase() + "?interval=d1&from=" + (day - 90) * 86400 + "&to=" + day * 86400 + "&limit=90";
               const history = await gmFetch(url);
               if (Array.isArray(history?.data)) {
-                row = sevenDayRisk(history.data, day);
+                row = Object.fromEntries([1, 3, 7].map(n => [n, holdingRisk(history.data, day, n)]));
                 withdrawalRiskCache.set(sym, {day, row});
               }
             }
@@ -5263,6 +5266,65 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       dip: "7-day deviation %", rsi: "RSI", looseValue: "Loose value"
     };
     let holdingsSort = {column: "value", direction: -1};
+    function recentSalesSummary(transactions, now, ownedFor) {
+      const since = now - 30 * 86400;
+      const summary = {sales: 0, fees: 0, pnl: 0, unknownPnl: 0, quickShares: 0, quickGross: 0, unknownAge: 0};
+      const bySymbol = new Map();
+      for (const tx of transactions) {
+        if (tx.timestamp > now || !["buy", "sell"].includes(tx.type)) continue;
+        if (!bySymbol.has(tx.symbol)) bySymbol.set(tx.symbol, []);
+        bySymbol.get(tx.symbol).push(tx);
+      }
+      for (const [symbol, history] of bySymbol) {
+        history.sort((a,b) => a.timestamp - b.timestamp);
+        if (!history.some(tx => tx.type === "sell" && tx.timestamp >= since)) continue;
+        const owned = ownedFor(symbol);
+        let net = 0, lowest = 0;
+        for (const tx of history) {
+          net += (tx.type === "buy" ? 1 : -1) * Number(tx.shares);
+          lowest = Math.min(lowest, net);
+        }
+        const opening = owned - net;
+        const reconciled = Number.isSafeInteger(owned) && Number.isSafeInteger(opening) && opening >= -lowest;
+        const lots = opening > 0 ? [{shares: opening, time: null, price: null}] : [];
+        let head = 0;
+        for (const tx of history) {
+          const shares = Number(tx.shares);
+          if (tx.type === "buy") {
+            lots.push({shares, time: tx.timestamp, price: Number(tx.pricePerShare)});
+            continue;
+          }
+          const recent = tx.timestamp >= since;
+          const gross = Number(tx.totalValue);
+          let left = shares, cost = 0, knownCost = reconciled;
+          while (left > 0 && head < lots.length) {
+            const lot = lots[head];
+            const used = Math.min(left, lot.shares);
+            if (!(lot.price > 0)) knownCost = false;
+            else cost += used * lot.price;
+            if (recent && reconciled) {
+              if (lot.time === null) summary.unknownAge += used;
+              else if (tx.timestamp - lot.time <= 48 * 3600) {
+                summary.quickShares += used;
+                summary.quickGross += gross * used / shares;
+              }
+            }
+            left -= used;
+            lot.shares -= used;
+            if (!lot.shares) head++;
+          }
+          if (!recent) continue;
+          summary.sales++;
+          summary.unknownAge += reconciled ? left : shares;
+          const fee = stockSellFee(tx);
+          summary.fees += fee;
+          if (knownCost && left === 0) summary.pnl += gross - cost - fee;
+          else if (Number.isFinite(tx.profit) && tx.profit !== 0) summary.pnl += stockNetProfit(tx);
+          else summary.unknownPnl++;
+        }
+      }
+      return summary;
+    }
     function sortedHoldings(stocks, perStock) {
       const {column, direction} = holdingsSort;
       function field(stock) {
@@ -5427,6 +5489,10 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                 <span class="alfa-caret ${localStorage.getItem("alfa_pl_expanded") !== "false" ? "rotated" : ""}">\u25BC</span>
             </div>
             <div class="vault-pl-content" id="vault-pl-content" style="display:${localStorage.getItem("alfa_pl_expanded") !== "false" ? "block" : "none"};">
+                <details id="vault-month-sales" style="margin:6px 0">
+                  <summary style="cursor:pointer">Last 30 days · sales, fees and 48-hour holds</summary>
+                  <div class="vault-month-detail"></div>
+                </details>
                 ${hasPortfolioData ? `
                 <div class="vault-pl-period-filters">
                     <button class="pl-period-btn ${currentPeriod === "day" ? "active" : ""}" data-period="day">Day</button>
@@ -5592,6 +5658,10 @@ P&L: ${formatMoney(trade.pnl)}`)) {
             </div>
         </div>
         
+        <details id="vault-capacity" style="margin:6px 0">
+          <summary style="cursor:pointer">Available at break-even after fees: ~${formatWithdrawMoney(withdrawalCapacity(breakdown).safe)}</summary>
+          <div class="vault-capacity-detail"></div><div class="vault-shortfall"></div>
+        </details>
         <div class="alfa-vault-options">
             <label class="vault-option-label" title="Protect benefit tier shares from being sold">
                 <input type="checkbox" id="alfa-lock-toggle" ${lockBlocksChecked ? "checked" : ""}>
@@ -5614,6 +5684,31 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         holdingsSort = {column, direction: holdingsSort.column === column ? -holdingsSort.direction : column === "symbol" ? 1 : -1};
         renderVaultSection();
       });
+      $("#vault-month-sales").on("toggle", function() {
+        if (!this.open) return;
+        const report = recentSalesSummary(portfolioData.transactions, Math.floor(Date.now()/1000),
+          sym => stockRows[sym] ? getOwnedShares(sym) : null);
+        this.querySelector(".vault-month-detail").textContent = report.sales ?
+          report.sales + " synced sales · Fees: " + formatSalePnl(report.fees) +
+          " · Realized after fees: " + formatSalePnl(report.pnl) + (report.unknownPnl ? " (known portion; " + report.unknownPnl + " sales unavailable)" : "") +
+          " · Sold within 48h of purchase (FIFO): " + report.quickShares.toLocaleString() + " shares, " +
+          formatWithdrawMoney(report.quickGross) + " gross" + (report.unknownAge ? " · Age unknown: " + report.unknownAge.toLocaleString() + " shares" : "") :
+          "No synced sales in the last 30 days. Sync your transaction history for coverage.";
+      });
+      function refreshCapacity() {
+        const panel = document.getElementById("vault-capacity");
+        if (!panel) return;
+        const capacity = withdrawalCapacity(calculateVaultBreakdown());
+        panel.querySelector("summary").textContent = "Available at break-even after fees: ~" + formatWithdrawMoney(capacity.safe);
+        panel.querySelector(".vault-capacity-detail").textContent =
+          "Estimated net at displayed prices · Protected or locked: " + formatWithdrawMoney(capacity.protected) +
+          " · Behind FIFO break-even limit: " + formatWithdrawMoney(capacity.below) +
+          " · Cost unknown: " + formatWithdrawMoney(capacity.unknown) +
+          (capacity.noQuote ? " · Missing quote: " + capacity.noQuote + " holdings" : "");
+        panel.querySelector(".vault-shortfall").textContent = shortfallPreview(capacity, parseTornNumber($("#vault-withdraw-amt").val()));
+      }
+      $("#vault-capacity").on("toggle", refreshCapacity);
+      $("#vault-withdraw-amt").on("input", refreshCapacity);
       $("#vault-spread-btn").on("click", vaultSpread);
       $("#vault-rebalance-btn").on("click", vaultRebalance);
       $("#vault-withdraw-btn").on("click", () => smartWithdraw(parseTornNumber($("#vault-withdraw-amt").val())));
@@ -7386,6 +7481,45 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     }
     function saleReturn(pnl, gross) {
       return Number.isFinite(pnl) && gross > 0 ? pnl / gross : -Infinity;
+    }
+    function withdrawalCapacity(stocks) {
+      const totals = {safe: 0, protected: 0, unknown: 0, below: 0, noQuote: 0, remaining: []};
+      for (const stock of stocks) {
+        if (stock.owned <= 0) continue;
+        const {symbol, owned, price} = stock;
+        if (!(price > 0 && Number.isFinite(price))) { totals.noQuote++; continue; }
+        const loose = stock.isLocked ? 0 : stock.looseShares;
+        const netPrice = stockNetFromGross(price);
+        totals.protected += (owned - loose) * netPrice;
+        if (!loose) continue;
+        const fifo = fifoWithdrawal(symbol, owned, price, loose);
+        if (fifo.pnl === null) { totals.unknown += loose * netPrice; continue; }
+        totals.safe += fifo.eligible * netPrice;
+        if (fifo.eligible < loose) {
+          totals.below += (loose - fifo.eligible) * netPrice;
+          totals.remaining.push({symbol, owned, price, loose, start: fifo.eligible});
+        }
+      }
+      return totals;
+    }
+    function shortfallPreview(capacity, target) {
+      let need = target - capacity.safe;
+      if (!(need > 0.005)) return "";
+      let raised = 0, pnl = 0;
+      // Illustrate one FIFO sale sequence, starting after every break-even share.
+      for (const row of capacity.remaining) {
+        const netPrice = stockNetFromGross(row.price);
+        const shares = Math.min(row.loose - row.start, Math.ceil((need - raised) / netPrice));
+        if (shares <= 0) break;
+        const before = fifoWithdrawal(row.symbol, row.owned, row.price, row.start).pnl;
+        const after = fifoWithdrawal(row.symbol, row.owned, row.price, row.start + shares).pnl;
+        pnl += after - before;
+        raised += shares * netPrice;
+      }
+      return "Break-even shortfall: " + formatWithdrawMoney(need) + ". " +
+        (raised ? "One FIFO estimate from remaining known-cost shares: " + formatWithdrawMoney(raised) +
+          " additional cash, after-fee gain/loss " + formatSalePnl(pnl) + ". " : "") +
+        (need - raised > 0.005 ? formatWithdrawMoney(need - raised) + " still uncovered by known-cost shares." : "");
     }
     function rankedWithdrawal(target, stocks, strategy) {
       const candidates = stocks.filter(stock => stock.looseShares > 0);
