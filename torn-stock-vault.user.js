@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.3.1
-// @description  Stock vault for Torn — spread, rebalance, withdraw, P&L, blocks, swing trading. Smart series UI.
-// @author       Noobler
-// @homepageURL  https://greasyfork.org/en/scripts/564798-smart-stock-vault
-// @supportURL   https://www.torn.com/forums.php#/p=threads&f=67&t=16535978&b=0&a=0
+// @version      0.3.2
+// @description  Build stock blocks with a share of each deposit, protect goal shares, and preview withdrawal gains or losses after fees in Torn.
+// @author       sLurpiixD
+// Original Smart Stock Vault by Noobler: https://greasyfork.org/en/scripts/564798-smart-stock-vault
+// @homepageURL  https://github.com/sLurpiixD/torn-stock-vault-releases
+// @supportURL   https://github.com/sLurpiixD/torn-stock-vault-releases/issues
 // @match        https://www.torn.com/page.php?sid=stocks*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=torn.com
 // @require      https://code.jquery.com/jquery-3.7.1.min.js
