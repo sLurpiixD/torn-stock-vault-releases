@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.2.9
+// @version      0.3.0
 // @description  Stock vault for Torn — spread, rebalance, withdraw, P&L, blocks, swing trading. Smart series UI.
 // @author       Noobler
 // @homepageURL  https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -4628,13 +4628,16 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                 <div class="settings-section" style="flex:1;">
                     <div class="settings-section-title">Withdrawal Strategy</div>
                     <select id="vault-withdraw-strategy" class="alfa-select" style="width:100%;">
-                        <option value="overweight_first" ${vaultConfig.withdrawStrategy === "overweight_first" ? "selected" : ""}>Sell Overweight First</option>
+                        <option value="fewest_orders" ${vaultConfig.withdrawStrategy === "fewest_orders" ? "selected" : ""}>Fewest Sell Orders</option>
+                    <option value="profitable_first" ${vaultConfig.withdrawStrategy === "profitable_first" ? "selected" : ""}>Profitable First</option>
+                    <option value="overweight_first" ${vaultConfig.withdrawStrategy === "overweight_first" ? "selected" : ""}>Sell Overweight First</option>
                         <option value="proportional" ${vaultConfig.withdrawStrategy === "proportional" ? "selected" : ""}>Proportional</option>
                         <option value="loose_first" ${vaultConfig.withdrawStrategy === "loose_first" ? "selected" : ""}>Loose Shares First</option>
                         <option value="swing_strategy" ${vaultConfig.withdrawStrategy === "swing_strategy" ? "selected" : ""}>Swing Strategy</option>
                         <option value="worst_roi" ${vaultConfig.withdrawStrategy === "worst_roi" ? "selected" : ""}>Worst ROI First</option>
                         <option value="best_performers" ${vaultConfig.withdrawStrategy === "best_performers" ? "selected" : ""}>Best Performers</option>
                     </select>
+                <label><input id="vault-profit-rebal" type="checkbox" ${vaultConfig.profitFirstRebalance ? "checked" : ""}> Rebalance sell order: Profitable First</label>
                 <label><input id="vault-break-even" type="checkbox" ${vaultConfig.breakEvenOnly ? "checked" : ""}> Only withdraw at break-even or better (after fee)</label>
                 </div>
             </div>
@@ -4808,6 +4811,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       $("#vault-deposit-strategy").on("change", function() {
         vaultConfig.depositStrategy = $(this).val();
       });
+      $("#vault-profit-rebal").on("change", function() { vaultConfig.profitFirstRebalance = this.checked; });
       $("#vault-break-even").on("change", function() { vaultConfig.breakEvenOnly = this.checked; });
       $("#vault-withdraw-strategy").on("change", function() {
         vaultConfig.withdrawStrategy = $(this).val();
@@ -4931,6 +4935,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                     <span class="vault-config-title">Withdrawal Strategy</span>
                 </div>
                 <select id="vault-withdraw-strategy" class="alfa-select" style="width:100%;">
+                    <option value="fewest_orders" ${vaultConfig.withdrawStrategy === "fewest_orders" ? "selected" : ""}>Fewest Sell Orders</option>
+                    <option value="profitable_first" ${vaultConfig.withdrawStrategy === "profitable_first" ? "selected" : ""}>Profitable First</option>
                     <option value="overweight_first" ${vaultConfig.withdrawStrategy === "overweight_first" ? "selected" : ""}>Sell Overweight First</option>
                     <option value="proportional" ${vaultConfig.withdrawStrategy === "proportional" ? "selected" : ""}>Proportional (equal % from each)</option>
                     <option value="loose_first" ${vaultConfig.withdrawStrategy === "loose_first" ? "selected" : ""}>Loose Shares First (Recommended)</option>
@@ -4938,6 +4944,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                     <option value="worst_roi" ${vaultConfig.withdrawStrategy === "worst_roi" ? "selected" : ""}>Worst ROI First</option>
                     <option value="best_performers" ${vaultConfig.withdrawStrategy === "best_performers" ? "selected" : ""}>Best Performers (take profits)</option>
                 </select>
+                <label><input id="vault-profit-rebal" type="checkbox" ${vaultConfig.profitFirstRebalance ? "checked" : ""}> Rebalance sell order: Profitable First</label>
                 <label><input id="vault-break-even" type="checkbox" ${vaultConfig.breakEvenOnly ? "checked" : ""}> Only withdraw at break-even or better (after fee)</label>
                 <div class="vault-strategy-desc" id="withdraw-strategy-desc">Sell equal percentage from each stock</div>
             </div>
@@ -4971,6 +4978,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         "roi_priority": "Allocate based on benefit ROI (higher ROI = more cash)"
       };
       const withdrawDescs = {
+        fewest_orders: "Use the fewest eligible stocks needed to raise the requested amount.",
+        profitable_first: "Prefer the highest estimated after-fee FIFO return on each proposed sale. Unknown costs rank last.",
         overweight_first: "Sell the largest loose holdings first, then draw evenly as their values converge.",
         "loose_first": "Sell shares above benefit thresholds first (protects tiers)",
         "proportional": "Sell equal percentage from each vault stock",
@@ -5025,6 +5034,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         vaultConfig.depositStrategy = $(this).val();
         $("#deposit-strategy-desc").text(depositDescs[vaultConfig.depositStrategy]);
       });
+      $("#vault-profit-rebal").on("change", function() { vaultConfig.profitFirstRebalance = this.checked; });
       $("#vault-break-even").on("change", function() { vaultConfig.breakEvenOnly = this.checked; });
       $("#vault-withdraw-strategy").on("change", function() {
         vaultConfig.withdrawStrategy = $(this).val();
@@ -5093,19 +5103,17 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       }
       let bankIncome = 0;
       let bankPrincipal = 0;
-      let bankRate = 0;
+      let bankRate = null;
       const nwData = lastNwCache && lastNwCache.nwFromApi ? await getLiquidNetworth(true) : await getLiquidNetworth(false);
       if (nwData && nwData.bankActive) {
         bankIncome = nwData.dailyBank;
         bankPrincipal = nwData.bankPrincipal;
-        if (bankPrincipal > 0) {
-          bankRate = bankIncome * 365 / bankPrincipal * 100;
-        }
+        bankRate = nwData.bankRate ?? null;
       }
       return {
         stockIncome,
         bankIncome,
-        totalIncome: stockIncome + bankIncome,
+        totalIncome: bankIncome == null ? null : stockIncome + bankIncome,
         bankPrincipal,
         bankRate,
         ownedBlocks
@@ -5250,6 +5258,29 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       if ($("#swing-content").length) localStorage.setItem("alfa_swing_expanded", $("#swing-content").is(":visible") ? "true" : "false");
       if ($("#stocks-content").length) localStorage.setItem("alfa_stocks_expanded", $("#stocks-content").is(":visible") ? "true" : "false");
     }
+    const vaultColumns = {
+      symbol: "Ticker", value: "Value", percentage: "Vault %", gain: "Gain/loss %",
+      dip: "7-day deviation %", rsi: "RSI", looseValue: "Loose value"
+    };
+    let holdingsSort = {column: "value", direction: -1};
+    function sortedHoldings(stocks, perStock) {
+      const {column, direction} = holdingsSort;
+      function field(stock) {
+        if (column === "gain") {
+          const basis = perStock[stock.symbol];
+          return basis?.totalCost > 0 ? basis.unrealizedPLPercent : null;
+        }
+        if (column === "dip") return stock.analysis?.dipFrom7d;
+        if (column === "rsi") return stock.analysis?.rsi;
+        return stock[column];
+      }
+      return stocks.slice().sort((a,b) => {
+        if (column === "symbol") return direction * a.symbol.localeCompare(b.symbol);
+        const left = field(a), right = field(b);
+        if (Number.isFinite(left) !== Number.isFinite(right)) return Number.isFinite(left) ? -1 : 1;
+        return (Number.isFinite(left) ? direction * (left - right) : 0) || a.symbol.localeCompare(b.symbol);
+      });
+    }
     function renderVaultSection() {
       persistVaultModuleExpandedState();
       $("#alfa-vault-section").remove();
@@ -5285,9 +5316,9 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         currentPeriod = localStorage.getItem("alfa_pl_period") || "all";
         periodPL = calculatePeriodPL(currentPeriod);
       }
-      const stockBars = !minimalMode && mod.stocks ? breakdown.map((stock) => {
+      const stockBars = !minimalMode && mod.stocks ? sortedHoldings(breakdown, plData.perStock).map((stock) => {
         const barWidth = Math.max(5, stock.percentage);
-        const dipDisplay = stock.analysis ? `<span class="${stock.analysis.dipFrom7d < 0 ? "vault-dip-neg" : "vault-dip-pos"}">${stock.analysis.dipFrom7d >= 0 ? "+" : ""}${stock.analysis.dipFrom7d.toFixed(1)}%</span>` : "";
+        const dipDisplay = stock.analysis ? `<span class="${stock.analysis.dipFrom7d < 0 ? "vault-dip-neg" : "vault-dip-pos"}">7d vs avg ${stock.analysis.dipFrom7d >= 0 ? "+" : ""}${stock.analysis.dipFrom7d.toFixed(1)}%</span>` : "";
         const rsiDisplay = stock.analysis ? `<span class="vault-rsi ${stock.analysis.rsi < 30 ? "oversold" : stock.analysis.rsi > 70 ? "overbought" : ""}">RSI:${stock.analysis.rsi.toFixed(0)}</span>` : "";
         const lockedClass = stock.isLocked ? "vault-row-locked" : "";
         const stockPL = plData.perStock[stock.symbol];
@@ -5295,7 +5326,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         if (stockPL && stockPL.totalCost > 0) {
           const plColor = stockPL.unrealizedPL >= 0 ? "#8bc34a" : "#ef5350";
           const plSign = stockPL.unrealizedPL >= 0 ? "+" : "";
-          plDisplay = `<span class="vault-stock-pl" style="color:${plColor};">${plSign}${stockPL.unrealizedPLPercent.toFixed(1)}%</span>`;
+          plDisplay = `<span class="vault-stock-pl" style="color:${plColor};">P&amp;L ${plSign}${stockPL.unrealizedPLPercent.toFixed(1)}%</span>`;
         }
         const swingIndicator = stock.hasSwingTrade ? `<span class="vault-swing-badge" title="Protected by swing trade (${stock.swingProtectedShares.toLocaleString()} shares)">\u{1F4C8}</span>` : "";
         const blockStatus = getBlockStatus(stock.symbol);
@@ -5338,7 +5369,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                 <span class="vault-stock-name">${stock.symbol}</span>
                 ${swingIndicator}
                 <span class="vault-stock-value">$${formatCompactNumber(stock.value)}</span>
-                <span class="vault-stock-pct">(${stock.percentage.toFixed(1)}%)</span>
+                <span class="vault-stock-pct">(Vault ${stock.percentage.toFixed(1)}%)</span>
                 ${plDisplay}
                 ${getSignalBadge(stock.analysis)}
                 <div class="vault-stock-actions">
@@ -5533,6 +5564,9 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                 <span class="alfa-caret ${localStorage.getItem("alfa_stocks_expanded") !== "false" ? "rotated" : ""}" id="stocks-caret">\u25BC</span>
             </div>
             <div class="stocks-content" id="stocks-content" style="display:${localStorage.getItem("alfa_stocks_expanded") !== "false" ? "block" : "none"};">
+                <div role="group" aria-label="Sort vault holdings" style="display:flex;flex-wrap:wrap;gap:4px">
+                  ${Object.entries(vaultColumns).map(([key,label]) => `<button type="button" class="alfa-mini-btn vault-sort-column" data-column="${key}" aria-pressed="${holdingsSort.column === key}">${label}${holdingsSort.column === key ? holdingsSort.direction === 1 ? " ↑" : " ↓" : ""}</button>`).join("")}
+                </div>
                 <div class="alfa-vault-breakdown" id="vault-breakdown">
                     ${stockBars}
                 </div>
@@ -5575,6 +5609,11 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         <div id="vault-trade-view" class="vault-trade-view" style="display:none;"></div>
     </div>`;
       mountVaultHtml(html);
+      $(".vault-sort-column").on("click", function() {
+        const column = this.dataset.column;
+        holdingsSort = {column, direction: holdingsSort.column === column ? -holdingsSort.direction : column === "symbol" ? 1 : -1};
+        renderVaultSection();
+      });
       $("#vault-spread-btn").on("click", vaultSpread);
       $("#vault-rebalance-btn").on("click", vaultRebalance);
       $("#vault-withdraw-btn").on("click", () => smartWithdraw(parseTornNumber($("#vault-withdraw-amt").val())));
@@ -6154,10 +6193,10 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       try {
         await ensureItemPrices(false);
         const incomeData = await calculateDailyIncome();
-        $("#vault-daily-income").text(formatMoney(Math.floor(incomeData.totalIncome)) + "/day");
+        $("#vault-daily-income").text(incomeData.totalIncome == null ? formatMoney(Math.floor(incomeData.stockIncome)) + "/day stocks · bank income unknown" : formatMoney(Math.floor(incomeData.totalIncome)) + "/day");
         if (incomeData.bankPrincipal > 0) {
           $("#vault-bank-info").html(
-            `\u{1F3E6} ${formatCompactNumber(incomeData.bankPrincipal)} invested @ ${incomeData.bankRate.toFixed(1)}%`
+            `\u{1F3E6} ${formatCompactNumber(incomeData.bankPrincipal)} bank balance · ${incomeData.bankRate == null ? "locked rate unavailable" : incomeData.bankRate.toFixed(2) + "% locked rate"}`
           );
         } else {
           $("#vault-bank-info").text("\u{1F3E6} No bank investment");
@@ -6243,6 +6282,9 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       }
       if (vaultConfig.skipOvervalued || $("#vault-skip-overvalued").is(":checked")) {
         const overvaluedSignals = strategy === "swing_strategy" ? ["strong_sell", "sell", "take_profit"] : ["sell", "take_profit"];
+        if (strategy === "swing_strategy") {
+          for (const sym of stocks2) if (!vaultAnalysisCache[sym]) await analyzeStockForVault(sym);
+        }
         stocks2 = stocks2.filter((sym) => {
           const analysis = vaultAnalysisCache[sym];
           if (!analysis) return true;
@@ -6817,13 +6859,16 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       }
       showRebalanceModal(rebalancePlan, breakdown, null);
     }
+    function plannerSignal(analysis, strategy) {
+      return strategy === "swing_strategy" ? analyzeSwingOpportunity(analysis)?.signal || "neutral" : analysis?.signal || "hold";
+    }
     async function calculateSmartRebalancePlan(currentBreakdown, eligibleStocks, totalVaultValue) {
       const sells = [];
       const buys = [];
-      const lockBlocks = blocksEnabled();
+      const strategy = vaultConfig.depositStrategy;
       const smartMode = vaultConfig.skipOvervalued || $("#vault-skip-overvalued").is(":checked");
-      const overvaluedSignals = ["sell", "take_profit"];
-      const buySignals = ["buy", "good", "hold"];
+      const overvaluedSignals = ["strong_sell", "sell", "take_profit"];
+      
       const currentMap = {};
       for (const stock of currentBreakdown) {
         if (eligibleStocks.includes(stock.symbol)) {
@@ -6848,17 +6893,12 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         if (price <= 0) continue;
         const valueDiff = idealValue - currentValue;
         const analysis = vaultAnalysisCache[sym];
-        const signal = analysis ? analysis.signal : "hold";
+        const signal = plannerSignal(analysis, strategy);
         const threshold = Math.max(Math.max(currentValue, idealValue) * 0.02, 5e3);
         if (Math.abs(valueDiff) < threshold) continue;
         if (valueDiff < 0) {
           const excessValue = Math.abs(valueDiff);
-          let sharesToSell = Math.floor(excessValue / price);
-          if (lockBlocks && current) {
-            sharesToSell = Math.min(sharesToSell, current.looseShares);
-          } else if (current) {
-            sharesToSell = Math.min(sharesToSell, current.owned);
-          }
+          const sharesToSell = Math.min(Math.floor(excessValue / price), current?.looseShares || 0);
           if (sharesToSell > 0) {
             const sellValue = sharesToSell * price;
             let reason = "Over target allocation";
@@ -6873,7 +6913,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
               currentShares,
               idealShares,
               analysis,
-              reason
+              reason,
+              pnl: fifoWithdrawal(sym, currentShares, price, sharesToSell).pnl
             });
             totalSellValue += sellValue;
           }
@@ -6894,47 +6935,45 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           }
         }
       }
-      if (totalBuyValue > totalSellValue) {
-        const scale = totalSellValue / totalBuyValue;
-        totalBuyValue = 0;
-        for (const buy of buys) {
-          buy.shares = Math.floor(buy.shares * scale);
-          buy.value = buy.shares * buy.price;
-          totalBuyValue += buy.value;
-        }
-        const filteredBuys = buys.filter((b) => b.shares > 0);
-        buys.length = 0;
-        buys.push(...filteredBuys);
-        let remainder = totalSellValue - totalBuyValue;
-        if (remainder > 0 && buys.length > 0) {
-          buys.sort((a, b) => {
-            const signalPriority2 = { "buy": 1, "good": 2, "hold": 3, "take_profit": 4, "sell": 5 };
-            const aPri = a.analysis ? signalPriority2[a.analysis.signal] || 3 : 3;
-            const bPri = b.analysis ? signalPriority2[b.analysis.signal] || 3 : 3;
-            return aPri - bPri;
-          });
-          for (const buy of buys) {
-            if (remainder < buy.price) break;
-            const extraShares = Math.floor(remainder / buy.price);
-            if (extraShares > 0) {
-              const addShares = Math.min(extraShares, Math.floor(remainder / buy.price));
-              buy.shares += addShares;
-              buy.value = buy.shares * buy.price;
-              remainder -= addShares * buy.price;
-              totalBuyValue += addShares * buy.price;
-            }
+      // Round each order down to cents before combining its available proceeds.
+      const netCents = sells.reduce((sum, sell) => sum + Math.floor(stockNetFromGross(sell.value) * 100 + 1e-7), 0);
+      const netSellValue = netCents / 100;
+      if (totalBuyValue > netSellValue) {
+        const scale = netSellValue / totalBuyValue;
+        let remainingCents = netCents;
+        const rounded = buys.map(buy => {
+          const desired = buy.shares;
+          const scaled = desired * scale;
+          const unitCents = Math.round(buy.price * 100);
+          buy.shares = Math.floor(scaled);
+          remainingCents -= buy.shares * unitCents;
+          return {buy, desired, unitCents, fraction: scaled - buy.shares};
+        }).sort((a,b) => b.fraction - a.fraction);
+        for (const item of rounded) {
+          if (item.buy.shares < item.desired && remainingCents >= item.unitCents) {
+            item.buy.shares++;
+            remainingCents -= item.unitCents;
           }
         }
+        for (const item of rounded) item.buy.value = item.buy.shares * item.unitCents / 100;
+        totalBuyValue = (netCents - remainingCents) / 100;
+        const funded = buys.filter(buy => buy.shares > 0);
+        buys.length = 0;
+        buys.push(...funded);
       }
-      const signalPriority = { "sell": 1, "take_profit": 2, "hold": 3, "good": 4, "buy": 5 };
+      const signalPriority = { "strong_sell": 0, "strong_buy": 6, "watch": 4, "sell": 1, "take_profit": 2, "hold": 3, "good": 4, "buy": 5 };
       sells.sort((a, b) => {
-        const aPri = a.analysis ? signalPriority[a.analysis.signal] || 3 : 3;
-        const bPri = b.analysis ? signalPriority[b.analysis.signal] || 3 : 3;
+        if (vaultConfig.profitFirstRebalance) {
+          const ar = saleReturn(a.pnl, a.value), br = saleReturn(b.pnl, b.value);
+          if (ar !== br) return br - ar;
+        }
+        const aPri = signalPriority[plannerSignal(a.analysis, strategy)] ?? 3;
+        const bPri = signalPriority[plannerSignal(b.analysis, strategy)] ?? 3;
         return aPri - bPri;
       });
       buys.sort((a, b) => {
-        const aPri = a.analysis ? signalPriority[a.analysis.signal] || 3 : 3;
-        const bPri = b.analysis ? signalPriority[b.analysis.signal] || 3 : 3;
+        const aPri = signalPriority[plannerSignal(a.analysis, strategy)] ?? 3;
+        const bPri = signalPriority[plannerSignal(b.analysis, strategy)] ?? 3;
         return bPri - aPri;
       });
       return {
@@ -6942,7 +6981,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         buys,
         totalSellValue,
         totalBuyValue,
-        netCashFlow: totalSellValue - totalBuyValue
+        netSellValue,
+        netCashFlow: netSellValue - totalBuyValue
       };
     }
     async function calculateIdealRebalanceAllocations(totalValue, stocks2, smartMode) {
@@ -7101,7 +7141,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
             <div class="rebal-section-header" style="color:#ef5350;">\u{1F4C9} Sell Orders (${plan.sells.length}) - Freeing up funds</div>
             <div class="rebal-table">
                 ${plan.sells.map((s, idx) => {
-          const signal = s.analysis ? s.analysis.signal : "hold";
+          const signal = plannerSignal(s.analysis, vaultConfig.depositStrategy);
           const signalColor = signalColors[signal] || "#888";
           const reason = s.reason || "";
           const reasonTip = reason.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
@@ -7110,12 +7150,13 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                         <span class="rebal-sym">${s.symbol}</span>
                         <span class="rebal-signal" style="color:${signalColor};">${signal.toUpperCase()}</span>
                         ${reasonHtml}
+                        <span>After-fee P&amp;L: ${formatSalePnl(s.pnl)}</span>
                         <span class="rebal-shares">-${s.shares.toLocaleString()}</span>
                         <span class="rebal-value" style="color:#ef5350;">${formatCompactNumber(s.value)}</span>
                     </div>`;
         }).join("")}
             </div>
-            <div class="rebal-subtotal" style="color:#ef5350;">Funds to redistribute: $${formatCompactNumber(plan.totalSellValue)}</div>
+            <div class="rebal-subtotal" style="color:#ef5350;">Net proceeds to redistribute: $${formatCompactNumber(plan.netSellValue)}</div>
         </div>`;
       } else {
         sellsHtml = `
@@ -7134,7 +7175,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
             <div class="rebal-section-header" style="color:#66bb6a;">\u{1F4C8} Buy Orders (${plan.buys.length}) - Redistributing to undervalued</div>
             <div class="rebal-table">
                 ${plan.buys.map((b, idx) => {
-          const signal = b.analysis ? b.analysis.signal : "hold";
+          const signal = plannerSignal(b.analysis, vaultConfig.depositStrategy);
           const signalColor = signalColors[signal] || "#888";
           return `<div class="rebal-row" data-buy-index="${idx}">
                         <span class="rebal-sym">${b.symbol}</span>
@@ -7168,7 +7209,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
             </div>
             <div class="rebal-summary-item">
                 <span class="rebal-summary-label">Sell \u2192 Buy</span>
-                <span class="rebal-summary-value" style="color:#caa14a;">$${formatCompactNumber(plan.totalSellValue)}</span>
+                <span class="rebal-summary-value" style="color:#caa14a;">$${formatCompactNumber(plan.netSellValue)}</span>
             </div>
             <div class="rebal-summary-item">
                 <span class="rebal-summary-label">Total Trades</span>
@@ -7184,7 +7225,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
             </div>
             <div class="rebal-summary-item">
                 <span class="rebal-summary-label">Cash Out</span>
-                <span class="rebal-summary-value" style="color:#ef5350;">$${formatCompactNumber(plan.totalSellValue)}</span>
+                <span class="rebal-summary-value" style="color:#ef5350;">$${formatCompactNumber(plan.netSellValue)}</span>
             </div>
         </div>`;
       }
@@ -7217,6 +7258,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           $btn.prop("disabled", true).text("Executing...");
           updateRowState(trade.index, trade.type, "executing");
           try {
+            if (trade.type === "sell") checkWithdrawalOrder(trade, false);
             await postTradeAsync(
               trade.symbol,
               trade.shares,
@@ -7342,6 +7384,33 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       }
       return {eligible, pnl: stockNetFromGross(shares * price) - cost};
     }
+    function saleReturn(pnl, gross) {
+      return Number.isFinite(pnl) && gross > 0 ? pnl / gross : -Infinity;
+    }
+    function rankedWithdrawal(target, stocks, strategy) {
+      const candidates = stocks.filter(stock => stock.looseShares > 0);
+      const orders = [];
+      let remaining = target;
+      while (remaining > 0 && candidates.length) {
+        let best;
+        for (const stock of candidates) {
+          const shares = Math.min(stock.looseShares, Math.ceil(remaining / stock.price));
+          const value = shares * stock.price;
+          const pnl = fifoWithdrawal(stock.symbol, stock.actualOwned, stock.price, shares).pnl;
+          const score = strategy === "fewest_orders" ? stock.looseValue : saleReturn(pnl, value);
+          if (!best || score > best.score || (score === best.score && value > best.value)) {
+            best = {stock, shares, value, score};
+          }
+        }
+        orders.push({symbol: best.stock.symbol, price: best.stock.price, shares: best.shares, value: best.value});
+        remaining -= best.value;
+        candidates.splice(candidates.indexOf(best.stock), 1);
+      }
+      return orders;
+    }
+    function formatSalePnl(pnl) {
+      return Number.isFinite(pnl) ? pnl.toLocaleString("en-US", {style:"currency", currency:"USD"}) : "Unknown";
+    }
     function overweightWithdrawPlan(target, stocks) {
       const rows = stocks.filter(s => s.looseShares > 0);
       if (!rows.length) return [];
@@ -7431,7 +7500,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         const fifo = fifoWithdrawal(sym, owned, price, looseShares);
         const available = vaultConfig.breakEvenOnly ? fifo.eligible : looseShares;
         if (available < looseShares) {
-          const sellSignal = ["sell","strong_sell","take_profit"].includes(vaultAnalysisCache[sym]?.signal);
+          const sellSignal = ["sell","strong_sell","take_profit"].includes(plannerSignal(vaultAnalysisCache[sym], strategy));
           exclusions.push(sym + (sellSignal ? " (sell signal)" : "") + ": " + (looseShares - available).toLocaleString() +
             (fifo.pnl === null ? " shares excluded — incomplete cost history" : " shares excluded — FIFO break-even limit"));
         }
@@ -7463,6 +7532,10 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       }
       let plan = [];
       switch (strategy) {
+        case "fewest_orders":
+        case "profitable_first":
+          plan = rankedWithdrawal(targetAmount, stockInfo, strategy);
+          break;
         case "overweight_first":
           plan = overweightWithdrawPlan(targetAmount, stockInfo);
           break;
@@ -7863,7 +7936,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                         <span class="rebal-sym">${item.symbol}</span>
                         <span class="rebal-signal" style="color:#ef5350;">SELL</span>
                         ${reasonHtml}
-                        <span>After-fee P&amp;L: ${item.pnl == null ? "Unknown" : item.pnl.toLocaleString("en-US",{style:"currency",currency:"USD"})}</span>
+                        <span>After-fee P&amp;L: ${formatSalePnl(item.pnl)}</span>
                         <span class="rebal-shares">-${item.shares.toLocaleString()}</span>
                         <span class="rebal-value" style="color:#ef5350;">${formatCompactNumber(item.value)}</span>
                     </div>`;
@@ -8181,6 +8254,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                 <span>Net Proceeds (after 0.1% fee)</span>
                 <span id="quick-sell-net" style="font-weight:bold; color:#8bc34a;">$0</span>
             </div>
+            <div class="quick-trade-calc-row"><span>After-fee gain/loss vs purchase</span><span class="sale-pnl">Unknown</span></div>
         </div>
         
         <div class="quick-trade-actions">
@@ -8224,6 +8298,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         $shares.text(sharesToSell.toLocaleString());
         $gross.text(formatMoney(grossValue));
         $net.text(formatMoney(netValue));
+        $calc.find(".sale-pnl").text(formatSalePnl(fifoWithdrawal(sym, stock.owned, price, sharesToSell).pnl));
         $calc.show();
         $execute.prop("disabled", false);
       });
@@ -8433,6 +8508,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                 <div class="quick-trade-calc-row"><span>Shares</span><span id="vault-trade-sell-shares" style="font-weight:bold; color:#fff;">0</span></div>
                 <div class="quick-trade-calc-row"><span>Gross Value</span><span id="vault-trade-sell-gross" style="font-weight:bold; color:#fff;">$0</span></div>
                 <div class="quick-trade-calc-row highlight"><span>Net Proceeds (after 0.1% fee)</span><span id="vault-trade-sell-net" style="font-weight:bold; color:#8bc34a;">$0</span></div>
+            <div class="quick-trade-calc-row"><span>After-fee gain/loss vs purchase</span><span class="sale-pnl">Unknown</span></div>
             </div>
             <div class="quick-trade-actions">
                 <button id="vault-trade-sell-execute" class="alfa-main-btn qb-btn-sell" disabled>Sell</button>
@@ -8471,6 +8547,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         $shares.text(sharesToSell.toLocaleString());
         $gross.text(formatMoney(grossValue));
         $net.text(formatMoney(netValue));
+        $calc.find(".sale-pnl").text(formatSalePnl(fifoWithdrawal(sym, stock.owned, price, sharesToSell).pnl));
         $calc.show();
         $execute.prop("disabled", false);
       });
@@ -8992,7 +9069,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       return val > 0 && b.freq ? val / b.freq : 0;
     }
     async function getLiquidNetworth(fastMode = false) {
-      if (fastMode && lastNwCache) return lastNwCache;
+      if (fastMode && lastNwCache && Date.now() - lastNwCache.fetchedAt < 60000) return lastNwCache;
       let key = localStorage.getItem("alfa_vault_apikey");
       if (!key) return lastNwCache || { liquid: 0, pureCash: 0, wallet: 0, dailyBank: 0, bankActive: false, bankPrincipal: 0 };
       try {
@@ -9001,13 +9078,15 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         let m = data.money, dailyBank = 0, bankActive = false, bankPrincipal = 0;
         if (m.city_bank && m.city_bank.amount > 0) {
           bankPrincipal = m.city_bank.amount;
-          if (m.city_bank.profit > 0 && m.city_bank.duration > 0) dailyBank = m.city_bank.profit / m.city_bank.duration;
+          const bank = m.city_bank;
+          dailyBank = Number.isFinite(bank.profit) && bank.duration > 0 ? bank.profit / bank.duration : null;
+          if (bank.until > 0 && bank.until <= Date.now() / 1000) dailyBank = 0;
           bankActive = true;
         }
         let pureCash = m.wallet || 0;
         if (networthSettings.sources.points && m.points > 0) pureCash += m.points * (itemPrices["points"] || 45e3);
         const wallet = m.wallet || 0;
-        lastNwCache = { liquid: 0, pureCash, wallet, dailyBank, bankActive, bankPrincipal, nwFromApi: true };
+        lastNwCache = { liquid: 0, pureCash, wallet, dailyBank, bankActive, bankPrincipal, fetchedAt: Date.now(), bankRate: Number.isFinite(m.city_bank?.interest_rate) ? m.city_bank.interest_rate : null, nwFromApi: true };
         return lastNwCache;
       } catch (e) {
         console.error("NW Error", e);
