@@ -1,8 +1,8 @@
-# Torn Stock Vault
+# VaultPilot
 
 Put a share of each deposit toward a stock benefit, protect your progress, and preview gains or losses after fees before you sell.
 
-[Install or update the GitHub edition in Tampermonkey](https://raw.githubusercontent.com/sLurpiixD/torn-stock-vault-releases/main/torn-stock-vault.user.js). Enable a single copy of the vault and reload Torn’s Stocks page.
+[Install or update the GitHub edition in Tampermonkey](https://raw.githubusercontent.com/sLurpiixD/torn-stock-vault-releases/main/torn-stock-vault.user.js). If both VaultPilot and Torn Stock Vault – Block Goals appear in Tampermonkey, disable the older copy and reload Torn’s Stocks page.
 
 **sLurpiixD** maintains this fork. Choose a benefit block goal, set the percentage of each deposit to put toward it, and review proposed sales before withdrawing.
 
