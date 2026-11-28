@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.3.2
+// @version      0.3.3
 // @description  Build stock blocks with a share of each deposit, protect goal shares, and preview withdrawal gains or losses after fees in Torn.
 // @author       sLurpiixD
 // Original Smart Stock Vault by Noobler: https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -4642,7 +4642,11 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                         <option value="best_performers" ${vaultConfig.withdrawStrategy === "best_performers" ? "selected" : ""}>Best Performers</option>
                     </select>
                 <label><input id="vault-profit-rebal" type="checkbox" ${vaultConfig.profitFirstRebalance ? "checked" : ""}> Rebalance sell order: Profitable First</label>
-                <label><input id="vault-break-even" type="checkbox" ${vaultConfig.breakEvenOnly ? "checked" : ""}> Only withdraw at break-even or better (after fee)</label>
+                <label>Withdrawal loss policy <select id="vault-break-even" class="alfa-select">
+                  <option value="any" ${!vaultConfig.breakEvenOnly && !vaultConfig.preferBreakEven ? "selected" : ""}>Allow sales at a loss</option>
+                  <option value="strict" ${vaultConfig.breakEvenOnly ? "selected" : ""}>Only withdraw at break-even or better</option>
+                  <option value="prefer" ${vaultConfig.preferBreakEven && !vaultConfig.breakEvenOnly ? "selected" : ""}>Prefer break-even, then cover the shortfall</option>
+                </select></label>
                 </div>
             </div>
             
@@ -4816,7 +4820,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         vaultConfig.depositStrategy = $(this).val();
       });
       $("#vault-profit-rebal").on("change", function() { vaultConfig.profitFirstRebalance = this.checked; });
-      $("#vault-break-even").on("change", function() { vaultConfig.breakEvenOnly = this.checked; });
+      $("#vault-break-even").on("change", function() { vaultConfig.breakEvenOnly = this.value === "strict"; vaultConfig.preferBreakEven = this.value === "prefer"; });
       $("#vault-withdraw-strategy").on("change", function() {
         vaultConfig.withdrawStrategy = $(this).val();
       });
@@ -4949,7 +4953,11 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                     <option value="best_performers" ${vaultConfig.withdrawStrategy === "best_performers" ? "selected" : ""}>Best Performers (take profits)</option>
                 </select>
                 <label><input id="vault-profit-rebal" type="checkbox" ${vaultConfig.profitFirstRebalance ? "checked" : ""}> Rebalance sell order: Profitable First</label>
-                <label><input id="vault-break-even" type="checkbox" ${vaultConfig.breakEvenOnly ? "checked" : ""}> Only withdraw at break-even or better (after fee)</label>
+                <label>Withdrawal loss policy <select id="vault-break-even" class="alfa-select">
+                  <option value="any" ${!vaultConfig.breakEvenOnly && !vaultConfig.preferBreakEven ? "selected" : ""}>Allow sales at a loss</option>
+                  <option value="strict" ${vaultConfig.breakEvenOnly ? "selected" : ""}>Only withdraw at break-even or better</option>
+                  <option value="prefer" ${vaultConfig.preferBreakEven && !vaultConfig.breakEvenOnly ? "selected" : ""}>Prefer break-even, then cover the shortfall</option>
+                </select></label>
                 <div class="vault-strategy-desc" id="withdraw-strategy-desc">Sell equal percentage from each stock</div>
             </div>
         </div>
@@ -5039,7 +5047,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         $("#deposit-strategy-desc").text(depositDescs[vaultConfig.depositStrategy]);
       });
       $("#vault-profit-rebal").on("change", function() { vaultConfig.profitFirstRebalance = this.checked; });
-      $("#vault-break-even").on("change", function() { vaultConfig.breakEvenOnly = this.checked; });
+      $("#vault-break-even").on("change", function() { vaultConfig.breakEvenOnly = this.value === "strict"; vaultConfig.preferBreakEven = this.value === "prefer"; });
       $("#vault-withdraw-strategy").on("change", function() {
         vaultConfig.withdrawStrategy = $(this).val();
         $("#withdraw-strategy-desc").text(withdrawDescs[vaultConfig.withdrawStrategy]);
@@ -7503,24 +7511,85 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       }
       return totals;
     }
-    function shortfallPreview(capacity, target) {
-      let need = target - capacity.safe;
-      if (!(need > 0.005)) return "";
-      let raised = 0, pnl = 0;
-      // Illustrate one FIFO sale sequence, starting after every break-even share.
+    function coverShortfall(capacity, need) {
+      const queues = [];
       for (const row of capacity.remaining) {
-        const netPrice = stockNetFromGross(row.price);
-        const shares = Math.min(row.loose - row.start, Math.ceil((need - raised) / netPrice));
-        if (shares <= 0) break;
-        const before = fifoWithdrawal(row.symbol, row.owned, row.price, row.start).pnl;
-        const after = fifoWithdrawal(row.symbol, row.owned, row.price, row.start + shares).pnl;
-        pnl += after - before;
-        raised += shares * netPrice;
+        let skip = row.start, room = row.loose - row.start;
+        const lots = [];
+        for (const lot of portfolioData.costBasis[row.symbol].lots) {
+          const offset = Math.min(skip, lot.shares);
+          skip -= offset;
+          const available = Math.min(room, lot.shares - offset);
+          if (available > 0) lots.push({shares: available, cost: lot.pricePerShare});
+          room -= available;
+          if (!room) break;
+        }
+        queues.push({row, lots, head: 0, sold: 0});
       }
+      let raised = 0, pnl = 0;
+      while (need - raised > 0.005) {
+        let best = null, bestRate = -Infinity, bestWeight = -Infinity;
+        for (const queue of queues) {
+          const lot = queue.lots[queue.head];
+          if (!lot) continue;
+          const row = queue.row;
+          const rate = 1 - lot.cost / stockNetFromGross(row.price);
+          const weight = (row.loose - row.start - queue.sold) * row.price;
+          if (rate > bestRate || (rate === bestRate && weight > bestWeight)) {
+            best = queue;
+            bestRate = rate;
+            bestWeight = weight;
+          }
+        }
+        if (!best) break;
+        const lot = best.lots[best.head];
+        const net = stockNetFromGross(best.row.price);
+        const qty = Math.min(lot.shares, Math.ceil((need - raised) / net));
+        raised += qty * net;
+        pnl += qty * (net - lot.cost);
+        best.sold += qty;
+        lot.shares -= qty;
+        if (!lot.shares) best.head++;
+      }
+      return {raised, pnl, orders: queues.filter(q => q.sold > 0).map(q => ({...q.row, extra: q.sold}))};
+    }
+    function shortfallPreview(capacity, target) {
+      const need = target - capacity.safe;
+      if (!(need > 0.005)) return "";
+      const {raised, pnl} = coverShortfall(capacity, need);
       return "Break-even shortfall: " + formatWithdrawMoney(need) + ". " +
-        (raised ? "One FIFO estimate from remaining known-cost shares: " + formatWithdrawMoney(raised) +
+        (raised ? "Known-cost FIFO estimate: " + formatWithdrawMoney(raised) +
           " additional cash, after-fee gain/loss " + formatSalePnl(pnl) + ". " : "") +
         (need - raised > 0.005 ? formatWithdrawMoney(need - raised) + " still uncovered by known-cost shares." : "");
+    }
+    function offerShortfall(plan, target, exclusions) {
+      const safeCash = stockNetFromGross(plan.reduce((sum, order) => sum + order.value, 0));
+      const need = target - safeCash;
+      if (need <= 0.005) return false;
+      const capacity = withdrawalCapacity(calculateVaultBreakdown());
+      const full = new Map(plan.map(item => [item.symbol, {...item}]));
+      // Only extend tickers whose entire break-even prefix is in this preview.
+      capacity.remaining = capacity.remaining.filter(row => (full.get(row.symbol)?.shares || 0) === row.start);
+      const cover = coverShortfall(capacity, need);
+      if (!cover.orders.length) return false;
+      for (const row of cover.orders) {
+        const shares = row.start + row.extra;
+        const pnl = fifoWithdrawal(row.symbol, row.owned, row.price, shares).pnl;
+        full.set(row.symbol, {...full.get(row.symbol), symbol: row.symbol, shares, price: row.price,
+          value: shares * row.price, pnl, approvedOwned: row.owned, safePrefix: row.start});
+      }
+      const combined = safeCash + cover.raised;
+      createModal("Choose withdrawal amount", `<p>Requested: ${formatWithdrawMoney(target)} net. Available at break-even: ${formatWithdrawMoney(safeCash)}.</p>
+        <p>Additional net cash: ${formatWithdrawMoney(cover.raised)} · Estimated gain/loss on those extra shares: ${formatSalePnl(cover.pnl)}.</p>
+        ${target - combined > 0.005 ? "<p>Remaining shortfall: " + formatWithdrawMoney(target - combined) + "</p>" : ""}
+        <div class="rebal-actions"><button class="alfa-main-btn" id="withdraw-safe-choice">${safeCash ? "Review " + formatWithdrawMoney(safeCash) + " at break-even" : "Keep holdings"}</button>
+        <button class="alfa-main-btn" id="withdraw-cover-choice">Review ${formatWithdrawMoney(combined)} including shortfall sales</button></div>`);
+      $("#withdraw-safe-choice").on("click", () => {
+        if (plan.length) showWithdrawModal(plan, target, exclusions);
+        else $("#alfa-modal-overlay").remove();
+      });
+      $("#withdraw-cover-choice").on("click", () => showWithdrawModal([...full.values()], target));
+      return true;
     }
     function rankedWithdrawal(target, stocks, strategy) {
       const candidates = stocks.filter(stock => stock.looseShares > 0);
@@ -7607,6 +7676,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       const exclusions = [];
       const plan = calculateWithdrawPlan(stockGrossFromNet(targetAmount), vaultConfig.withdrawStrategy, exclusions);
       status.html("");
+      if (vaultConfig.preferBreakEven && !vaultConfig.breakEvenOnly && offerShortfall(plan, targetAmount, exclusions)) return;
       showWithdrawModal(plan, targetAmount, exclusions);
     }
     function calculateWithdrawPlan(targetAmount, strategy, exclusions = []) {
@@ -7633,7 +7703,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         const totalProtected = lockedShares + swingProtectedShares;
         const looseShares = Math.max(0, owned - totalProtected);
         const fifo = fifoWithdrawal(sym, owned, price, looseShares);
-        const available = vaultConfig.breakEvenOnly ? fifo.eligible : looseShares;
+        const available = (vaultConfig.breakEvenOnly || vaultConfig.preferBreakEven) ? fifo.eligible : looseShares;
         if (available < looseShares) {
           const sellSignal = ["sell","strong_sell","take_profit"].includes(plannerSignal(vaultAnalysisCache[sym], strategy));
           exclusions.push(sym + (sellSignal ? " (sell signal)" : "") + ": " + (looseShares - available).toLocaleString() +
@@ -8000,7 +8070,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       return plan;
     }
     function showWithdrawModal(plan, targetAmount, exclusions = []) {
-      const strict = !!vaultConfig.breakEvenOnly;
+      const strict = !!(vaultConfig.breakEvenOnly || vaultConfig.preferBreakEven);
       const validPlan = plan.filter((p) => p.shares > 0);
       const totalAvailable = validPlan.reduce((sum, p) => sum + p.value, 0);
       const expectedCash = stockNetFromGross(totalAvailable);
@@ -8121,7 +8191,18 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           $btn.prop("disabled", true).text("Executing...");
           updateRowState(trade.index, "executing");
           try {
-            checkWithdrawalOrder(trade, strict || vaultConfig.breakEvenOnly);
+            const preview = validPlan[trade.index];
+            if (preview.approvedOwned !== undefined && !vaultConfig.breakEvenOnly && vaultConfig.preferBreakEven) {
+              checkWithdrawalOrder(trade, false);
+              const owned = getOwnedSharesFromDom(trade.symbol);
+              const price = getPrice(trade.symbol);
+              const fifo = fifoWithdrawal(trade.symbol, owned, price, trade.shares);
+              if (owned !== preview.approvedOwned || owned !== getOwnedShares(trade.symbol) ||
+                  price < preview.price || fifo.pnl === null || fifo.pnl + 1e-7 < preview.pnl || fifo.eligible < preview.safePrefix)
+                throw new Error("Quote, holdings or purchase history changed. Recalculate the withdrawal.");
+            } else {
+              checkWithdrawalOrder(trade, strict || vaultConfig.breakEvenOnly || vaultConfig.preferBreakEven);
+            }
             await postTradeAsync(trade.symbol, trade.shares, "sellShares");
             updateRowState(trade.index, "completed", trade.value);
             updateVaultDisplay();
@@ -8150,7 +8231,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         const item = plan[i];
         status.html(`<span style="color:#ffd54f;">Selling ${item.symbol}... (${i + 1}/${plan.length})</span>`);
         try {
-          checkWithdrawalOrder(item, vaultConfig.breakEvenOnly);
+          checkWithdrawalOrder(item, vaultConfig.breakEvenOnly || vaultConfig.preferBreakEven);
           checkGoalSale(item.symbol, item.shares);
           await new Promise((resolve, reject) => {
             $.post(
