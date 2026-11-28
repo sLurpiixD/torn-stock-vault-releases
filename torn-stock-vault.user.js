@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Torn Stock Vault – Block Goals
+// @name         VaultPilot
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.3.10
+// @version      0.3.11
 // @description  Put a share of each deposit toward a stock benefit, protect your progress, and preview gains or losses after fees before you sell.
 // @author       sLurpiixD
 // Original Smart Stock Vault by Noobler: https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -4173,7 +4173,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       if (_tornsyUnavailableWarned) return;
       _tornsyUnavailableWarned = true;
       const msg = extra || "Tornsy unavailable (no GM_xmlhttpRequest). Using DOM prices; signal weighting skipped. Desktop Tampermonkey/Violentmonkey recommended.";
-      console.warn("[Smart Stock Vault]", msg);
+      console.warn("[VaultPilot]", msg);
       try {
         const el = $("#vault-status");
         if (el && el.length) {
@@ -5543,7 +5543,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         const html2 = `
         <div id="alfa-vault-section" class="alfa-vault-section">
             <div class="alfa-vault-header">
-                <span class="alfa-vault-title">Smart Stock Vault</span>
+                <span class="alfa-vault-title">VaultPilot</span>
                 <div class="alfa-vault-actions">
                     <button id="vault-config-btn" class="alfa-mini-btn" style="border-color:#caa14a; color:#caa14a;">Settings</button>
                 </div>
@@ -5647,7 +5647,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       const html = `
     <div id="alfa-vault-section" class="alfa-vault-section">
         <div class="alfa-vault-header">
-            <span class="alfa-vault-title">Smart Stock Vault</span>
+            <span class="alfa-vault-title">VaultPilot</span>
             <div class="alfa-vault-actions">
                 <button id="vault-config-btn" class="alfa-mini-btn" style="border-color:#888; color:#888;">Settings</button>
             </div>
@@ -9726,7 +9726,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         return;
       }
       if (Date.now() > deadline) {
-        console.error("[Smart Stock Vault] jQuery or panel mount not ready after 30s");
+        console.error("[VaultPilot] jQuery or panel mount not ready after 30s");
         return;
       }
       window.setTimeout(tick, 50);
@@ -11121,7 +11121,7 @@ textarea.alfa-input { height: auto; min-height: 60px; }
     injectStocksStyles();
     panel = ui.createPanel({
       id: "smart-stocks-panel",
-      badge: "Smart Stock Vault",
+      badge: "VaultPilot",
       mount: "stocksBar",
       pageBody: "grow",
       collapsedLegacyKeys: ["alfa_vault_collapsed"],
