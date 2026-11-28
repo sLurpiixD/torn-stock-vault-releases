@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.3.3
+// @version      0.3.4
 // @description  Build stock blocks with a share of each deposit, protect goal shares, and preview withdrawal gains or losses after fees in Torn.
 // @author       sLurpiixD
 // Original Smart Stock Vault by Noobler: https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -3460,7 +3460,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         console.error("Failed to save portfolio data:", e);
       }
     }
-    async function fetchStockTransactionLogs(fullSync = false, statusCallback = null) {
+    async function fetchStockTransactionLogs(fullSync = false, statusCallback = null, pageLimit = Infinity) {
       const key = localStorage.getItem("alfa_vault_apikey");
       if (!key) {
         console.error("No API key for portfolio sync");
@@ -3565,6 +3565,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           } else {
             hasMore = false;
           }
+          if (hasMore && results.pagesScanned >= pageLimit) return {success: false, limited: true};
           if (hasMore) {
             await new Promise((r) => setTimeout(r, 150));
           }
@@ -4328,7 +4329,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     }
     async function analyzeStockForVault(symbol) {
       const cached = getCached(`analysis_${symbol}`, CACHE_TTL.analysis);
-      if (cached) {
+      if (freshSpreadAnalysis(cached)) {
         vaultAnalysisCache[symbol] = cached;
         return cached;
       }
@@ -6354,14 +6355,18 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       if (!isGmXhrAvailable()) {
         warnTornsyUnavailable();
       }
-      const allocations = await calculateSpreadAllocations(availableCash, vaultConfig.depositStrategy);
-      if (allocations.length === 0) {
+      const review = {checked: 0, notes: []};
+      const allocations = await calculateSpreadAllocations(availableCash, vaultConfig.depositStrategy, review);
+      if (allocations.length === 0 && !review.notes.length) {
         status.html('<span style="color:#ef5350;">Could not calculate allocations!</span>');
         setTimeout(() => status.html(""), 3e3);
         return;
       }
       status.html("");
       showSpreadModal(allocations, availableCash, keepAmount);
+      if (review.checked || review.notes.length) {
+        $("<div>").addClass("rebal-warning").text("Smart Mode checked " + review.checked + " tickers. " + review.notes.join(" · ")).insertBefore("#alfa-modal-overlay .rebal-section:first");
+      }
     }
     function goalPercent(goal) {
       return Number.isInteger(goal?.percent) && goal.percent >= 0 && goal.percent <= 100 ? goal.percent : 0;
@@ -6377,7 +6382,12 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       const shares = Math.min(target - owned, Math.floor(goalCents / unitCents));
       return shares > 0 ? {symbol, shares, price, cost: shares * unitCents / 100, goalTarget: target} : null;
     }
-    async function calculateSpreadAllocations(totalCash, strategy) {
+    function freshSpreadAnalysis(analysis) {
+      const age = Date.now() - analysis?.timestamp;
+      return age >= 0 && age < CACHE_TTL.analysis && analysis.price > 0 &&
+        Number.isFinite(analysis.rsi) && Number.isFinite(analysis.dipFrom7d) && !!analysis.signal;
+    }
+    async function calculateSpreadAllocations(totalCash, strategy, review = {checked: 0, notes: []}) {
       const goal = vaultConfig.blockGoal;
       const percent = goalPercent(goal);
       let stocks2 = percent ? [...new Set([...vaultConfig.stocks, goal.symbol])] : vaultConfig.stocks;
@@ -6385,19 +6395,30 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         stocks2 = stocks2.filter((sym) => !vaultConfig.lockedStocks.includes(sym));
       }
       if (vaultConfig.skipOvervalued || $("#vault-skip-overvalued").is(":checked")) {
-        const overvaluedSignals = strategy === "swing_strategy" ? ["strong_sell", "sell", "take_profit"] : ["sell", "take_profit"];
-        if (strategy === "swing_strategy") {
-          for (const sym of stocks2) if (!vaultAnalysisCache[sym]) await analyzeStockForVault(sym);
-        }
-        stocks2 = stocks2.filter((sym) => {
-          const analysis = vaultAnalysisCache[sym];
-          if (!analysis) return true;
-          if (strategy === "swing_strategy") {
-            const opportunity = analyzeSwingOpportunity(analysis);
-            return opportunity ? !overvaluedSignals.includes(opportunity.signal) : true;
+        const eligible = [];
+        for (const sym of stocks2) {
+          review.checked++;
+          let analysis = vaultAnalysisCache[sym];
+          if (!freshSpreadAnalysis(analysis)) analysis = await analyzeStockForVault(sym);
+          let signal = null;
+          if (freshSpreadAnalysis(analysis)) {
+            signal = strategy === "swing_strategy" ? analyzeSwingOpportunity(analysis)?.signal : analysis.signal;
           }
-          return !overvaluedSignals.includes(analysis.signal);
-        });
+          const allowed = ["buy","strong_buy","watch","good","hold","neutral"].includes(signal);
+          if (allowed) {
+            eligible.push(sym);
+            continue;
+          }
+          const reason = ["sell","strong_sell","take_profit"].includes(signal) ? signal.replace("_"," ").toUpperCase() : "signal unavailable";
+          review.notes.push(sym + " skipped · " + reason);
+        }
+        stocks2 = eligible;
+        if (percent && !stocks2.includes(goal.symbol) && goalThreshold(goal.symbol, goal) >
+            Math.max(getOwnedShares(goal.symbol), getOwnedSharesFromDom(goal.symbol))) {
+          const reserve = Math.floor(Math.round(totalCash * 100) * percent / 100);
+          totalCash = (Math.round(totalCash * 100) - reserve) / 100;
+          review.notes.push(formatWithdrawMoney(reserve / 100) + " kept in cash for " + goal.symbol + " this spread.");
+        }
       }
       if (stocks2.length === 0) {
         $("#vault-status").html('<span style="color:#ffb74d;">No eligible stocks! Check locks or run analysis.</span>');
@@ -6828,7 +6849,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         </div>
         <div id="spread-progress" style="text-align:center; padding:10px; color:#66bb6a; font-weight:bold;">Progress: 0/${allocations.length} trades completed</div>
         <div class="rebal-actions">
-            <button id="spread-cycle-btn" class="alfa-main-btn" style="margin-right:10px;">${tradeQueue.length > 0 ? `Buying ${tradeQueue[0].symbol} (1/${tradeQueue.length})` : "No trades"}</button>
+            <button id="spread-cycle-btn" ${tradeQueue.length ? "" : "disabled"} class="alfa-main-btn" style="margin-right:10px;">${tradeQueue.length > 0 ? `Buying ${tradeQueue[0].symbol} (1/${tradeQueue.length})` : "No trades"}</button>
             <button id="spread-cancel" class="alfa-main-btn" style="border-color:#888; color:#888;">Close</button>
         </div>
     </div>`;
@@ -7196,6 +7217,22 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       }
       return allocations;
     }
+    function rebalanceImpact(breakdown, plan) {
+      const values = new Map(breakdown.map(row => [row.symbol, row.owned * row.price]));
+      function largest() {
+        let total = 0, value = 0, symbol = "";
+        for (const [ticker, amount] of values) {
+          total += amount;
+          if (amount > value) { value = amount; symbol = ticker; }
+        }
+        return total > 0 ? symbol + " " + (100 * value / total).toFixed(1) + "%" : "No stock holdings";
+      }
+      const before = largest();
+      for (const sell of plan.sells) values.set(sell.symbol, values.get(sell.symbol) - sell.value);
+      for (const buy of plan.buys) values.set(buy.symbol, (values.get(buy.symbol) || 0) + buy.value);
+      const fees = plan.sells.reduce((sum, sell) => sum + sell.value * STOCK_SELL_FEE_RATE, 0);
+      return "Estimated sale fees: " + formatSalePnl(fees) + " · Largest share of vault stock value: " + before + " → " + largest();
+    }
     function showRebalanceModal(plan, currentBreakdown, idealAllocations) {
       const signalColors = {
         "buy": "#66bb6a",
@@ -7351,6 +7388,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         </div>
     </div>`;
       createModal("Rebalance Portfolio", html);
+      $("<div>").addClass("rebal-warning").text(rebalanceImpact(currentBreakdown, plan)).insertBefore("#alfa-modal-overlay .rebal-section:first");
       $("#rebal-cancel").on("click", function() {
         $("#alfa-modal-overlay").remove();
       });
@@ -7562,7 +7600,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           " additional cash, after-fee gain/loss " + formatSalePnl(pnl) + ". " : "") +
         (need - raised > 0.005 ? formatWithdrawMoney(need - raised) + " still uncovered by known-cost shares." : "");
     }
-    function offerShortfall(plan, target, exclusions) {
+    function offerShortfall(plan, target, exclusions, history = []) {
       const safeCash = stockNetFromGross(plan.reduce((sum, order) => sum + order.value, 0));
       const need = target - safeCash;
       if (need <= 0.005) return false;
@@ -7584,11 +7622,12 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         ${target - combined > 0.005 ? "<p>Remaining shortfall: " + formatWithdrawMoney(target - combined) + "</p>" : ""}
         <div class="rebal-actions"><button class="alfa-main-btn" id="withdraw-safe-choice">${safeCash ? "Review " + formatWithdrawMoney(safeCash) + " at break-even" : "Keep holdings"}</button>
         <button class="alfa-main-btn" id="withdraw-cover-choice">Review ${formatWithdrawMoney(combined)} including shortfall sales</button></div>`);
+      showHistoryNotice(history);
       $("#withdraw-safe-choice").on("click", () => {
-        if (plan.length) showWithdrawModal(plan, target, exclusions);
+        if (plan.length) showWithdrawModal(plan, target, exclusions, history);
         else $("#alfa-modal-overlay").remove();
       });
-      $("#withdraw-cover-choice").on("click", () => showWithdrawModal([...full.values()], target));
+      $("#withdraw-cover-choice").on("click", () => showWithdrawModal([...full.values()], target, [], history));
       return true;
     }
     function rankedWithdrawal(target, stocks, strategy) {
@@ -7656,6 +7695,39 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       if (strict && fifoWithdrawal(symbol, owned, price, order.shares).eligible < order.shares)
         throw new Error("Sale no longer qualifies after fees or cost history is incomplete. Close and recalculate.");
     }
+    function withdrawalHistoryGaps() {
+      const gaps = [];
+      for (const stock of calculateVaultBreakdown()) {
+        if (stock.isLocked || stock.looseShares <= 0) continue;
+        const basis = portfolioData.costBasis?.[stock.symbol];
+        const lots = Array.isArray(basis?.lots) ? basis.lots : [];
+        const accounted = lots.reduce((n, lot) => n + (Number.isSafeInteger(lot.shares) && lot.shares > 0 &&
+          Number.isFinite(lot.pricePerShare) && lot.pricePerShare > 0 ? lot.shares : 0), 0);
+        if (accounted !== stock.owned || basis?.totalShares !== stock.owned) {
+          gaps.push(stock.symbol + ": " + accounted.toLocaleString() + " shares accounted for; " +
+            stock.owned.toLocaleString() + " held" + (accounted === stock.owned ? " (ledger total differs)" : ""));
+        }
+      }
+      return gaps;
+    }
+    let withdrawalSync = null;
+    async function checkWithdrawalHistory(status) {
+      const gaps = withdrawalHistoryGaps();
+      if (!gaps.length) return [];
+      if (!localStorage.getItem("alfa_vault_apikey")) return ["Quick sync requires an API key.", ...gaps];
+      status.text("Checking recent stock transactions…");
+      if (!withdrawalSync) {
+        withdrawalSync = fetchStockTransactionLogs(false, null, 3).then(result => {
+          if (result.success) processTransactions(result);
+          return result;
+        }).catch(() => ({success: false})).finally(() => { withdrawalSync = null; });
+      }
+      const result = await withdrawalSync;
+      const remaining = withdrawalHistoryGaps();
+      if (!remaining.length) return [];
+      const note = result.limited ? "Quick sync reached its page limit." : result.success ? "Purchase history still incomplete." : "Quick sync unavailable.";
+      return [note + " Check Portfolio P&L → Full Sync.", ...remaining];
+    }
     async function smartWithdraw(targetAmount) {
       const status = $("#vault-status");
       if (!targetAmount || targetAmount <= 0) {
@@ -7668,6 +7740,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         setTimeout(() => status.html(""), 3e3);
         return;
       }
+      const history = await checkWithdrawalHistory(status);
       if (vaultConfig.withdrawStrategy === "swing_strategy") {
         status.html('<span style="color:#ffd54f;">Analyzing stocks...</span>');
         await analyzeAllVaultStocks((msg) => status.html(`<span style="color:#ffd54f;">${msg}</span>`));
@@ -7676,8 +7749,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       const exclusions = [];
       const plan = calculateWithdrawPlan(stockGrossFromNet(targetAmount), vaultConfig.withdrawStrategy, exclusions);
       status.html("");
-      if (vaultConfig.preferBreakEven && !vaultConfig.breakEvenOnly && offerShortfall(plan, targetAmount, exclusions)) return;
-      showWithdrawModal(plan, targetAmount, exclusions);
+      if (vaultConfig.preferBreakEven && !vaultConfig.breakEvenOnly && offerShortfall(plan, targetAmount, exclusions, history)) return;
+      showWithdrawModal(plan, targetAmount, exclusions, history);
     }
     function calculateWithdrawPlan(targetAmount, strategy, exclusions = []) {
       let stocks2 = vaultConfig.stocks;
@@ -8069,7 +8142,10 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       }
       return plan;
     }
-    function showWithdrawModal(plan, targetAmount, exclusions = []) {
+    function showHistoryNotice(history) {
+      if (history.length) $("<div>").addClass("rebal-warning").text(history.join(" · ")).prependTo("#alfa-modal-overlay .alfa-modal-body");
+    }
+    function showWithdrawModal(plan, targetAmount, exclusions = [], history = []) {
       const strict = !!(vaultConfig.breakEvenOnly || vaultConfig.preferBreakEven);
       const validPlan = plan.filter((p) => p.shares > 0);
       const totalAvailable = validPlan.reduce((sum, p) => sum + p.value, 0);
@@ -8180,6 +8256,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         </div>
     </div>`;
       createModal("Smart Withdraw", html);
+      showHistoryNotice(history);
       $("#withdraw-cancel").on("click", function() {
         $("#alfa-modal-overlay").remove();
       });
