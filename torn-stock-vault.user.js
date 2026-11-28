@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.3.5
+// @version      0.3.6
 // @description  Build stock blocks with a share of each deposit, protect goal shares, and preview withdrawal gains or losses after fees in Torn.
 // @author       sLurpiixD
 // Original Smart Stock Vault by Noobler: https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -3036,9 +3036,46 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       const toggle = $("#alfa-lock-toggle");
       return toggle.length ? toggle.is(":checked") : localStorage.getItem("alfa_vault_lock") === "true";
     }
-    function easiestBlockGoal() {
+    const blockBenefitLabels = {
+      "WSU": "Education · 10% shorter courses",
+      "IST": "Education · Free courses",
+      "THS": "Medical · Box of Medical Supplies",
+      "SYM": "Drugs · Drug Pack",
+      "MCS": "Training · 100 energy",
+      "EVL": "Training · 1,000 happiness",
+      "FHG": "Training · Hotel coupon",
+      "MUN": "Training · Energy drink six-pack",
+      "PRN": "Training · Erotic DVD",
+      "CBD": "Crimes · 50 nerve",
+      "LAG": "Crimes · Lawyer business card",
+      "PTS": "Points · 100 points",
+      "TCI": "Banking · 10% interest bonus",
+      "TCM": "Racing · 10% racing skill boost",
+      "WLT": "Travel · Private jet access",
+      "HRG": "Property · Random property",
+      "ELT": "Property · 10% upgrade discount",
+      "ASS": "Alcohol · Six-pack",
+      "BAG": "Combat · Ammunition pack",
+      "EWM": "Combat · Grenade box",
+      "TCC": "Clothing · Clothing cache",
+      "LOS": "Missions · 25% more credits and cash",
+      "IIL": "Coding · 50% shorter virus coding time",
+      "SYS": "Security · Advanced firewall",
+      "TCP": "Company · Sales boost",
+      "TGP": "Company · Advertising boost",
+      "MSG": "Advertising · Free classifieds",
+      "YAZ": "Advertising · Free banners",
+      "LSC": "Lottery · Voucher",
+      "CNC": "Cash · $80M",
+      "GRN": "Cash · $4M",
+      "IOU": "Cash · $12M",
+      "TMI": "Cash · $25M",
+      "TCT": "Cash · $1M",
+      "TSB": "Cash · $50M"
+    };
+    function easiestBlockGoal(symbols = Object.keys(STOCK_DATA).sort()) {
       let best = null;
-      for (const symbol of Object.keys(STOCK_DATA).sort()) {
+      for (const symbol of symbols) {
         if (vaultConfig.lockedStocks?.includes(symbol)) continue;
         const priceCents = Math.round(getPrice(symbol) * 100);
         if (!Number.isSafeInteger(priceCents) || priceCents <= 0) continue;
@@ -3054,7 +3091,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       return best;
     }
     function goalThreshold(sym, goal) {
-      if (!goal || goal.symbol !== sym) return 0;
+      if (!goal || goal.symbol !== sym || (sym === "MCS" && goal.tier > 10)) return 0;
       const stock = STOCK_DATA[sym];
       if (!stock || !Number.isSafeInteger(goal.tier) || goal.tier < 1 || (stock.type === "P" && goal.tier !== 1)) return 0;
       const required = stock.base * (2 ** goal.tier - 1);
@@ -4690,6 +4727,10 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                     ${allStocks.map(sym => `<option value="${sym}" ${vaultConfig.blockGoal?.symbol === sym ? "selected" : ""}>${sym}</option>`).join("")}
                 </select></label>
                 <button type="button" id="vault-easiest-goal" class="alfa-mini-btn">Select easiest block</button>
+                <label>Choose by benefit <select class="alfa-select" id="vault-benefit-choice">
+                  <option value="">Select a benefit…</option>
+                  ${Object.entries(blockBenefitLabels).sort((a,b) => a[1].localeCompare(b[1])).map(([sym,label]) => `<option value="${sym}">${label} (${sym})</option>`).join("")}
+                </select></label>
                 <div id="vault-easiest-result" aria-live="polite"></div>
                 <label>Target tier <input id="vault-goal-tier" class="alfa-input" type="number" min="1" step="1" style="width:65px" value="${Number(vaultConfig.blockGoal?.tier) || 1}"></label>
                 <label for="vault-goal-share">Deposit toward goal <output id="vault-goal-percent"></output></label>
@@ -4882,11 +4923,11 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           (passive ? symbol + " has one benefit tier. " : "") +
           "Vault Spread splits cash after your keep amount. Unused goal cash goes to other eligible stocks.");
       }
-      $("#vault-easiest-goal").on("click", function() {
-        const best = easiestBlockGoal();
+      function applyBlockSuggestion(symbol) {
+        const best = symbol ? easiestBlockGoal([symbol]) : easiestBlockGoal();
         const result = $("#vault-easiest-result");
         if (!best) {
-          result.text("No eligible next block with a current price. Your selection is unchanged.");
+          result.text((symbol ? symbol + ": " : "") + "No eligible next block. Check the stock lock, current price and completed tiers. Your current goal is still selected.");
           return;
         }
         $("#vault-block-goal").val(best.symbol);
@@ -4895,6 +4936,11 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         result.text(best.symbol + " tier " + best.tier + " needs " + best.remaining.toLocaleString() +
           " more shares (~" + formatWithdrawMoney(best.cents / 100) +
           "). Set the deposit percentage below and save to use this goal.");
+      }
+      $("#vault-easiest-goal").on("click", () => applyBlockSuggestion());
+      $("#vault-benefit-choice").on("change", function() {
+        if (this.value) applyBlockSuggestion(this.value);
+        this.value = "";
       });
       $("#vault-block-goal, #vault-goal-tier").on("change", function() {
         $("#vault-easiest-result").empty();
@@ -4906,7 +4952,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         const goalSymbol = $("#vault-block-goal").val();
         const goal = goalSymbol ? {symbol: goalSymbol, tier: Number($("#vault-goal-tier").val()), percent: Number($("#vault-goal-share").val())} : null;
         if (goal && !goalThreshold(goalSymbol, goal)) {
-          alert("Enter a valid target tier. Passive stocks support tier 1 only.");
+          alert("Enter a valid target tier. Passive stocks support tier 1 only and MCS supports up to 10.");
           return;
         }
         vaultConfig.blockGoal = goal;
