@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.3.8
+// @version      0.3.9
 // @description  Build stock blocks with a share of each deposit, protect goal shares, and preview withdrawal gains or losses after fees in Torn.
 // @author       sLurpiixD
 // Original Smart Stock Vault by Noobler: https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -7799,18 +7799,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         full.set(row.symbol, {...full.get(row.symbol), symbol: row.symbol, shares, price: row.price,
           value: shares * row.price, pnl, approvedOwned: row.owned, safePrefix: row.start});
       }
-      const combined = safeCash + cover.raised;
-      createModal("Choose withdrawal amount", `<p>Requested: ${formatWithdrawMoney(target)} net. Available at break-even: ${formatWithdrawMoney(safeCash)}.</p>
-        <p>Additional net cash: ${formatWithdrawMoney(cover.raised)} · Estimated gain/loss on those extra shares: ${formatSalePnl(cover.pnl)}.</p>
-        ${target - combined > 0.005 ? "<p>Remaining shortfall: " + formatWithdrawMoney(target - combined) + "</p>" : ""}
-        <div class="rebal-actions"><button class="alfa-main-btn" id="withdraw-safe-choice">${safeCash ? "Review " + formatWithdrawMoney(safeCash) + " at break-even" : "Keep holdings"}</button>
-        <button class="alfa-main-btn" id="withdraw-cover-choice">Review ${formatWithdrawMoney(combined)} including shortfall sales</button></div>`);
-      showHistoryNotice(history);
-      $("#withdraw-safe-choice").on("click", () => {
-        if (plan.length) showWithdrawModal(plan, target, exclusions, history);
-        else $("#alfa-modal-overlay").remove();
-      });
-      $("#withdraw-cover-choice").on("click", () => showWithdrawModal([...full.values()], target, [], history));
+      const choices = {safe: plan, full: [...full.values()], exclusions, extraCash: cover.raised, extraPnl: cover.pnl};
+      showWithdrawModal(plan, target, exclusions, history, choices);
       return true;
     }
     function rankedWithdrawal(target, stocks, strategy) {
@@ -8329,7 +8319,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     function showHistoryNotice(history) {
       if (history.length) $("<div>").addClass("rebal-warning").text(history.join(" · ")).prependTo("#alfa-modal-overlay .alfa-modal-body");
     }
-    function showWithdrawModal(plan, targetAmount, exclusions = [], history = []) {
+    function showWithdrawModal(plan, targetAmount, exclusions = [], history = [], choices = null, includeExtra = false) {
       const strict = !!(vaultConfig.breakEvenOnly || vaultConfig.preferBreakEven);
       const validPlan = plan.filter((p) => p.shares > 0);
       const totalAvailable = validPlan.reduce((sum, p) => sum + p.value, 0);
@@ -8434,13 +8424,25 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         </div>
         <div id="withdraw-progress" style="text-align:center; padding:10px; color:#ef5350; font-weight:bold;">Progress: 0/${validPlan.length} trades completed</div>
         <div id="withdraw-cash-received" style="text-align:center; padding:5px; color:#8bc34a; font-weight:bold;">Cash Received: ~$0</div>
-        <div class="rebal-actions">
-            ${tradeQueue.length > 0 ? `<button id="withdraw-cycle-btn" class="alfa-main-btn" style="margin-right:10px;">Selling ${tradeQueue[0].symbol} (1/${tradeQueue.length})</button>` : ""}
+        <div id="withdraw-actions" class="rebal-actions" style="flex:0 0 auto;flex-wrap:wrap;padding:8px">
+            ${choices ? `<label style="flex-basis:100%"><input id="withdraw-include-extra" type="checkbox" ${includeExtra ? "checked" : ""}> Include shortfall sales: +${formatWithdrawMoney(choices.extraCash)} cash (estimated extra P&amp;L: ${formatSalePnl(choices.extraPnl)})</label>` : ""}
+            ${tradeQueue.length > 0 ? `<button id="withdraw-cycle-btn" class="alfa-main-btn" style="margin-right:10px;">Sell ${tradeQueue[0].symbol} (1/${tradeQueue.length})</button>` : `<button class="alfa-main-btn" id="withdraw-cycle-btn" disabled>Sell · no eligible shares</button>`}
             <button id="withdraw-cancel" class="alfa-main-btn" style="border-color:#888; color:#888;">Close</button>
         </div>
     </div>`;
       createModal("Smart Withdraw", html);
+      const body = $("#alfa-modal-overlay .alfa-modal-body");
+      body.css({"overflow-y": "auto", "min-height": "0"});
+      $("#withdraw-actions").insertAfter(body);
       showHistoryNotice(history);
+      if (!tradeQueue.length) {
+        $("<p>").text(choices ? "Select Include shortfall sales to review the eligible shares and enable Sell." :
+          "No eligible shares for this plan. Check stock locks, block reserves and purchase history.").prependTo(body);
+      }
+      $("#withdraw-include-extra").on("change", function() {
+        const extra = this.checked;
+        showWithdrawModal(extra ? choices.full : choices.safe, targetAmount, extra ? [] : choices.exclusions, history, choices, extra);
+      });
       $("#withdraw-cancel").on("click", function() {
         $("#alfa-modal-overlay").remove();
       });
@@ -8448,6 +8450,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         $("#withdraw-cycle-btn").on("click", async function() {
           if (currentTradeIndex >= tradeQueue.length) return;
           const trade = tradeQueue[currentTradeIndex];
+          $("#withdraw-include-extra").prop("disabled", true);
           const $btn = $(this);
           $btn.prop("disabled", true).text("Executing...");
           updateRowState(trade.index, "executing");
@@ -8472,13 +8475,13 @@ P&L: ${formatMoney(trade.pnl)}`)) {
               $btn.prop("disabled", true).text("Completed!").css("background", "#8bc34a").css("color", "#111");
             } else {
               const nextTrade = tradeQueue[currentTradeIndex];
-              $btn.prop("disabled", false).text(`Selling ${nextTrade.symbol} (${currentTradeIndex + 1}/${tradeQueue.length})`);
+              $btn.prop("disabled", false).text(`Sell ${nextTrade.symbol} (${currentTradeIndex + 1}/${tradeQueue.length})`);
             }
           } catch (e) {
             console.error(`Sell failed for ${trade.symbol}:`, e);
             updateRowState(trade.index, "failed");
             $("#withdraw-progress").text(e.message || "Sale failed.");
-            $btn.prop("disabled", false).text(`Selling ${trade.symbol} (${currentTradeIndex + 1}/${tradeQueue.length}) - Retry`);
+            $btn.prop("disabled", false).text(`Sell ${trade.symbol} (${currentTradeIndex + 1}/${tradeQueue.length}) - Retry`);
           }
         });
       }
