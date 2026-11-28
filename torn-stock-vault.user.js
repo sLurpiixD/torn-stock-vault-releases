@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.3.6
+// @version      0.3.7
 // @description  Build stock blocks with a share of each deposit, protect goal shares, and preview withdrawal gains or losses after fees in Torn.
 // @author       sLurpiixD
 // Original Smart Stock Vault by Noobler: https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -3073,6 +3073,57 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       "TCT": "Cash · $1M",
       "TSB": "Cash · $50M"
     };
+    let educationCheck = null;
+    function pagePlayerId() {
+      try { return Number(JSON.parse(document.getElementById("torn-user")?.value || "{}").id) || 0; }
+      catch { return 0; }
+    }
+    function educationProgress(catalog, record) {
+      if (!Array.isArray(catalog) || !catalog.length || !Array.isArray(record?.complete) ||
+          !Object.hasOwn(record, "current")) return "unknown";
+      const valid = id => Number.isSafeInteger(id) && id > 0;
+      if (!record.complete.every(valid)) return "unknown";
+      const required = new Set();
+      for (const department of catalog) {
+        if (!Array.isArray(department?.courses) || !department.courses.length) return "unknown";
+        for (const course of department.courses) {
+          if (!valid(course?.id) || required.has(course.id)) return "unknown";
+          required.add(course.id);
+        }
+      }
+      if (record.current !== null) return "unfinished";
+      const completed = new Set(record.complete);
+      return [...required].every(id => completed.has(id)) ? "complete" : "unfinished";
+    }
+    function educationVerified() {
+      return educationCheck?.state === "complete" && Date.now() < educationCheck.expires &&
+        educationCheck.player === pagePlayerId() && educationCheck.key === localStorage.getItem("alfa_vault_apikey");
+    }
+    async function refreshEducation() {
+      const key = localStorage.getItem("alfa_vault_apikey");
+      const player = pagePlayerId();
+      if (!key || !player) { educationCheck = null; return "unknown"; }
+      if (educationCheck?.key === key && educationCheck.player === player && Date.now() < educationCheck.expires)
+        return educationCheck.pending || educationCheck.state;
+      const check = {key, player, expires: Date.now() + 300000, state: "unknown"};
+      educationCheck = check;
+      check.pending = (async () => {
+        try {
+          const query = "?key=" + encodeURIComponent(key);
+          const [identity, user, master] = await Promise.all([
+            tornApiFetch("https://api.torn.com/user/" + query + "&selections=basic"),
+            tornApiFetch("https://api.torn.com/v2/user/education" + query),
+            tornApiFetch("https://api.torn.com/v2/torn/education" + query)
+          ]);
+          if (Number(identity?.player_id) === player && pagePlayerId() === player && !user?.error && !master?.error)
+            check.state = educationProgress(master?.education, user?.education);
+        } catch { check.state = "unknown"; }
+        check.pending = null;
+        if (check.state === "unknown") check.expires = Date.now() + 30000;
+        return check.state;
+      })();
+      return check.pending;
+    }
     function easiestBlockGoal(symbols = Object.keys(STOCK_DATA).sort()) {
       let best = null;
       for (const symbol of symbols) {
@@ -3099,13 +3150,17 @@ P&L: ${formatMoney(trade.pnl)}`)) {
     }
     function blockReserve(sym, owned, enabled) {
       if (!enabled || !STOCK_DATA[sym]) return 0;
+      if (sym === "WSU" && vaultConfig.educationProtection)
+        return educationVerified() ? 0 : Math.min(owned, STOCK_DATA.WSU.base);
       const tier = getBenefitTier(sym, owned).tier;
       const earned = STOCK_DATA[sym].base * (2 ** tier - 1);
       return Math.min(owned, Math.max(earned, goalThreshold(sym, vaultConfig.blockGoal)));
     }
     function checkGoalSale(sym, shares) {
       const target = goalThreshold(sym, vaultConfig.blockGoal);
-      if (!target || !blocksEnabled()) return;
+      const educationGuard = sym === "WSU" && vaultConfig.educationProtection;
+      if (educationGuard && vaultConfig.lockedStocks?.includes(sym)) throw new Error("WSU is manually locked.");
+      if ((!target && !educationGuard) || !blocksEnabled()) return;
       const owned = Math.min(getOwnedShares(sym), getOwnedSharesFromDom(sym));
       if (shares > owned - blockReserve(sym, owned, true)) {
         throw new Error("Sale would use shares protected for " + sym + ". Refresh the plan or change the goal in Protection settings.");
@@ -3117,7 +3172,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       const totalShares = pos.shares;
       const owned = getOwnedShares(pos.symbol);
       const benefitLocked = getSwingBenefitLockedShares(pos.symbol, owned);
-      const goalActive = blocksEnabled() && goalThreshold(pos.symbol, vaultConfig.blockGoal) > 0;
+      const goalActive = blocksEnabled() && (goalThreshold(pos.symbol, vaultConfig.blockGoal) > 0 || (pos.symbol === "WSU" && vaultConfig.educationProtection));
       const maxOwnedSellable = Math.max(0, owned - (goalActive ? benefitLocked : 0));
       const exitReasonOptions = [
         { v: "manual_close", l: "\u270B Manual" },
@@ -4727,6 +4782,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                     ${allStocks.map(sym => `<option value="${sym}" ${vaultConfig.blockGoal?.symbol === sym ? "selected" : ""}>${sym}</option>`).join("")}
                 </select></label>
                 <button type="button" id="vault-easiest-goal" class="alfa-mini-btn">Select easiest block</button>
+                <button type="button" id="vault-needed-goal" class="alfa-mini-btn">Select a needed stock block</button>
+                <label><input type="checkbox" id="vault-education-protection" ${vaultConfig.educationProtection ? "checked" : ""}> With Lock Blocks on, protect WSU until all education is verified complete</label>
                 <label>Choose by benefit <select class="alfa-select" id="vault-benefit-choice">
                   <option value="">Select a benefit…</option>
                   ${Object.entries(blockBenefitLabels).sort((a,b) => a[1].localeCompare(b[1])).map(([sym,label]) => `<option value="${sym}">${label} (${sym})</option>`).join("")}
@@ -4938,6 +4995,22 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           "). Set the deposit percentage below and save to use this goal.");
       }
       $("#vault-easiest-goal").on("click", () => applyBlockSuggestion());
+      $("#vault-needed-goal").on("click", async function() {
+        const button = this;
+        button.disabled = true;
+        $("#vault-easiest-result").text("Checking education and starter blocks…");
+        try {
+          const state = await refreshEducation();
+          if (!button.isConnected) return;
+          const firstTier = symbol => easiestBlockGoal([symbol])?.tier === 1;
+          const educationFirst = state !== "complete" && firstTier("WSU");
+          const symbol = educationFirst ? "WSU" : firstTier("TCT") ? "TCT" : null;
+          if (symbol) applyBlockSuggestion(symbol);
+          else $("#vault-easiest-result").text("No eligible first-tier starter block at current quotes. Your current goal is still selected.");
+          const note = state === "unknown" ? "Education unverified." : state === "complete" ? "All courses verified complete." : "Education unfinished.";
+          $("#vault-easiest-result").append(document.createTextNode(" " + note + (symbol === "TCT" ? " TCT provides a recurring cash payout." : "")));
+        } finally { button.disabled = false; }
+      });
       $("#vault-benefit-choice").on("change", function() {
         if (this.value) applyBlockSuggestion(this.value);
         this.value = "";
@@ -4955,6 +5028,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           alert("Enter a valid target tier. Passive stocks support tier 1 only and MCS supports up to 10.");
           return;
         }
+        vaultConfig.educationProtection = $("#vault-education-protection").is(":checked");
         vaultConfig.blockGoal = goal;
         if ($("#settings-exclude-locked-from-value").length) vaultConfig.excludeLockedBlocksFromValue = $("#settings-exclude-locked-from-value").is(":checked");
         if ($("#settings-mod-portfolio").length) {
@@ -5436,6 +5510,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       });
     }
     function renderVaultSection() {
+      if (vaultConfig.educationProtection) void refreshEducation();
       persistVaultModuleExpandedState();
       $("#alfa-vault-section").remove();
       const savedKey = localStorage.getItem("alfa_vault_apikey") || "";
@@ -6470,7 +6545,9 @@ P&L: ${formatMoney(trade.pnl)}`)) {
         Number.isFinite(analysis.rsi) && Number.isFinite(analysis.dipFrom7d) && !!analysis.signal;
     }
     async function calculateSpreadAllocations(totalCash, strategy, review = {checked: 0, notes: []}) {
-      const goal = vaultConfig.blockGoal;
+      if (vaultConfig.educationProtection) await refreshEducation();
+      const savedGoal = vaultConfig.blockGoal;
+      const goal = savedGoal?.symbol === "WSU" && vaultConfig.educationProtection && educationVerified() ? null : savedGoal;
       const percent = goalPercent(goal);
       let stocks2 = percent ? [...new Set([...vaultConfig.stocks, goal.symbol])] : vaultConfig.stocks;
       if (vaultConfig.lockedStocks && vaultConfig.lockedStocks.length > 0) {
@@ -7031,6 +7108,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       setTimeout(() => $("#vault-status").html(""), 3e3);
     }
     async function vaultRebalance() {
+      if (vaultConfig.educationProtection) await refreshEducation();
       const status = $("#vault-status");
       if (vaultConfig.stocks.length === 0) {
         alert("No vault stocks configured! Click Config to set up your vault.");
@@ -7811,6 +7889,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       return [note + " Check Portfolio P&L → Full Sync.", ...remaining];
     }
     async function smartWithdraw(targetAmount) {
+      if (vaultConfig.educationProtection) await refreshEducation();
       const status = $("#vault-status");
       if (!targetAmount || targetAmount <= 0) {
         status.html('<span style="color:#ef5350;">Enter a valid withdrawal amount!</span>');
