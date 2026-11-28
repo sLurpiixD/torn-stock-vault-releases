@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.3.4
+// @version      0.3.5
 // @description  Build stock blocks with a share of each deposit, protect goal shares, and preview withdrawal gains or losses after fees in Torn.
 // @author       sLurpiixD
 // Original Smart Stock Vault by Noobler: https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -3036,6 +3036,23 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       const toggle = $("#alfa-lock-toggle");
       return toggle.length ? toggle.is(":checked") : localStorage.getItem("alfa_vault_lock") === "true";
     }
+    function easiestBlockGoal() {
+      let best = null;
+      for (const symbol of Object.keys(STOCK_DATA).sort()) {
+        if (vaultConfig.lockedStocks?.includes(symbol)) continue;
+        const priceCents = Math.round(getPrice(symbol) * 100);
+        if (!Number.isSafeInteger(priceCents) || priceCents <= 0) continue;
+        const owned = Math.max(getOwnedShares(symbol), getOwnedSharesFromDom(symbol));
+        if (!Number.isSafeInteger(owned) || owned < 0) continue;
+        const tier = getBenefitTier(symbol, owned).tier + 1;
+        const remaining = goalThreshold(symbol, {symbol, tier}) - owned;
+        const cents = remaining * priceCents;
+        if (remaining > 0 && Number.isSafeInteger(cents) && (!best || cents < best.cents)) {
+          best = {symbol, tier, remaining, cents};
+        }
+      }
+      return best;
+    }
     function goalThreshold(sym, goal) {
       if (!goal || goal.symbol !== sym) return 0;
       const stock = STOCK_DATA[sym];
@@ -4672,6 +4689,8 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                     <option value="">None</option>
                     ${allStocks.map(sym => `<option value="${sym}" ${vaultConfig.blockGoal?.symbol === sym ? "selected" : ""}>${sym}</option>`).join("")}
                 </select></label>
+                <button type="button" id="vault-easiest-goal" class="alfa-mini-btn">Select easiest block</button>
+                <div id="vault-easiest-result" aria-live="polite"></div>
                 <label>Target tier <input id="vault-goal-tier" class="alfa-input" type="number" min="1" step="1" style="width:65px" value="${Number(vaultConfig.blockGoal?.tier) || 1}"></label>
                 <label for="vault-goal-share">Deposit toward goal <output id="vault-goal-percent"></output></label>
                 <input type="range" id="vault-goal-share" min="0" max="100" step="1" value="${goalPercent(vaultConfig.blockGoal)}" style="width:100%">
@@ -4863,7 +4882,24 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           (passive ? symbol + " has one benefit tier. " : "") +
           "Vault Spread splits cash after your keep amount. Unused goal cash goes to other eligible stocks.");
       }
-      $("#vault-block-goal").on("change", updateGoalControls);
+      $("#vault-easiest-goal").on("click", function() {
+        const best = easiestBlockGoal();
+        const result = $("#vault-easiest-result");
+        if (!best) {
+          result.text("No eligible next block with a current price. Your selection is unchanged.");
+          return;
+        }
+        $("#vault-block-goal").val(best.symbol);
+        $("#vault-goal-tier").val(best.tier);
+        updateGoalControls();
+        result.text(best.symbol + " tier " + best.tier + " needs " + best.remaining.toLocaleString() +
+          " more shares (~" + formatWithdrawMoney(best.cents / 100) +
+          "). Set the deposit percentage below and save to use this goal.");
+      });
+      $("#vault-block-goal, #vault-goal-tier").on("change", function() {
+        $("#vault-easiest-result").empty();
+        updateGoalControls();
+      });
       $("#vault-goal-share").on("input change", updateGoalControls);
       updateGoalControls();
       $("#settings-save").on("click", function() {
@@ -5358,7 +5394,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       $("#alfa-vault-section").remove();
       const savedKey = localStorage.getItem("alfa_vault_apikey") || "";
       const lockBlocks = localStorage.getItem("alfa_vault_lock") === "true";
-      if (vaultConfig.stocks.length === 0) {
+      if (vaultConfig.stocks.length === 0 && !goalPercent(vaultConfig.blockGoal)) {
         const html2 = `
         <div id="alfa-vault-section" class="alfa-vault-section">
             <div class="alfa-vault-header">
