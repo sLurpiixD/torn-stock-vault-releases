@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.3.7
+// @version      0.3.8
 // @description  Build stock blocks with a share of each deposit, protect goal shares, and preview withdrawal gains or losses after fees in Torn.
 // @author       sLurpiixD
 // Original Smart Stock Vault by Noobler: https://greasyfork.org/en/scripts/564798-smart-stock-vault
@@ -3124,20 +3124,38 @@ P&L: ${formatMoney(trade.pnl)}`)) {
       })();
       return check.pending;
     }
+    function nextBlockProgress(symbol) {
+      const owned = Math.max(getOwnedShares(symbol), getOwnedSharesFromDom(symbol));
+      if (!Number.isSafeInteger(owned) || owned < 0) return null;
+      const tier = getBenefitTier(symbol, owned).tier + 1;
+      const target = goalThreshold(symbol, {symbol, tier});
+      if (!target) return {complete: true};
+      const remaining = target - owned;
+      const priceCents = Math.round(getPrice(symbol) * 100);
+      const cost = remaining * priceCents;
+      const cents = priceCents > 0 && Number.isSafeInteger(cost) ? cost : null;
+      return {symbol, tier, owned, target, remaining, cents};
+    }
+    function benefitOption(symbol, label) {
+      const progress = stockRows[symbol] ? nextBlockProgress(symbol) : null;
+      const locked = vaultConfig.lockedStocks?.includes(symbol);
+      let detail = "Holdings unavailable";
+      if (progress?.complete) detail = "Complete · 0 shares needed · $0 left";
+      else if (progress) {
+        const percent = Math.floor(progress.owned / progress.target * 1000) / 10;
+        const cost = progress.cents === null ? "price unavailable" :
+          "$" + (progress.cents / 100).toLocaleString("en-US", {maximumFractionDigits: 2}) + " left";
+        detail = "Tier " + progress.tier + " · " + percent + "% · " + progress.remaining.toLocaleString("en-US") + " shares needed · " + cost;
+      }
+      const disabled = locked || !progress || progress.complete || progress.cents === null;
+      return `<option value="${symbol}" ${disabled ? "disabled" : ""}>${label} (${symbol}) · ${detail}${locked ? " · Locked" : ""}</option>`;
+    }
     function easiestBlockGoal(symbols = Object.keys(STOCK_DATA).sort()) {
       let best = null;
       for (const symbol of symbols) {
         if (vaultConfig.lockedStocks?.includes(symbol)) continue;
-        const priceCents = Math.round(getPrice(symbol) * 100);
-        if (!Number.isSafeInteger(priceCents) || priceCents <= 0) continue;
-        const owned = Math.max(getOwnedShares(symbol), getOwnedSharesFromDom(symbol));
-        if (!Number.isSafeInteger(owned) || owned < 0) continue;
-        const tier = getBenefitTier(symbol, owned).tier + 1;
-        const remaining = goalThreshold(symbol, {symbol, tier}) - owned;
-        const cents = remaining * priceCents;
-        if (remaining > 0 && Number.isSafeInteger(cents) && (!best || cents < best.cents)) {
-          best = {symbol, tier, remaining, cents};
-        }
+        const next = nextBlockProgress(symbol);
+        if (next?.remaining > 0 && next.cents !== null && (!best || next.cents < best.cents)) best = next;
       }
       return best;
     }
@@ -4786,7 +4804,7 @@ P&L: ${formatMoney(trade.pnl)}`)) {
                 <label><input type="checkbox" id="vault-education-protection" ${vaultConfig.educationProtection ? "checked" : ""}> With Lock Blocks on, protect WSU until all education is verified complete</label>
                 <label>Choose by benefit <select class="alfa-select" id="vault-benefit-choice">
                   <option value="">Select a benefit…</option>
-                  ${Object.entries(blockBenefitLabels).sort((a,b) => a[1].localeCompare(b[1])).map(([sym,label]) => `<option value="${sym}">${label} (${sym})</option>`).join("")}
+                  ${Object.entries(blockBenefitLabels).sort((a,b) => a[1].localeCompare(b[1])).map(([sym,label]) => benefitOption(sym, label)).join("")}
                 </select></label>
                 <div id="vault-easiest-result" aria-live="polite"></div>
                 <label>Target tier <input id="vault-goal-tier" class="alfa-input" type="number" min="1" step="1" style="width:65px" value="${Number(vaultConfig.blockGoal?.tier) || 1}"></label>
@@ -5010,6 +5028,11 @@ P&L: ${formatMoney(trade.pnl)}`)) {
           const note = state === "unknown" ? "Education unverified." : state === "complete" ? "All courses verified complete." : "Education unfinished.";
           $("#vault-easiest-result").append(document.createTextNode(" " + note + (symbol === "TCT" ? " TCT provides a recurring cash payout." : "")));
         } finally { button.disabled = false; }
+      });
+      $("#vault-benefit-choice").on("focus", function() {
+        for (const option of Array.from(this.options).slice(1)) {
+          option.outerHTML = benefitOption(option.value, blockBenefitLabels[option.value]);
+        }
       });
       $("#vault-benefit-choice").on("change", function() {
         if (this.value) applyBlockSuggestion(this.value);
