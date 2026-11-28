@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         Torn Stock Vault – Block Goals
 // @namespace    https://github.com/sLurpiixD/torn-stock-vault
-// @version      0.3.9
-// @description  Build stock blocks with a share of each deposit, protect goal shares, and preview withdrawal gains or losses after fees in Torn.
+// @version      0.3.10
+// @description  Put a share of each deposit toward a stock benefit, protect your progress, and preview gains or losses after fees before you sell.
 // @author       sLurpiixD
 // Original Smart Stock Vault by Noobler: https://greasyfork.org/en/scripts/564798-smart-stock-vault
+// Based on Stock Manager & Advisor by TheALFA [2869953].
 // @homepageURL  https://github.com/sLurpiixD/torn-stock-vault-releases
 // @supportURL   https://github.com/sLurpiixD/torn-stock-vault-releases/issues
 // @match        https://www.torn.com/page.php?sid=stocks*
